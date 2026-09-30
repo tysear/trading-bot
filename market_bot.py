@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = "8917209003:AAFEDVugxuj6LEzELv8NtkoCav5Zwqn8f_E"
 CHAT_ID = "1814016230"
 
+# ========== متغير لتتبع آخر رسالة (لمنع التكرار) ==========
+LAST_UPDATE_ID = 0
+
 # ========== قوائم الأصول ==========
 CRYPTO_LIST = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT', 'DOGEUSDT']
 STOCKS_LIST = ['AAPL', 'TSLA', 'NVDA', 'AMZN', 'MSFT', 'GOOGL', 'META']
@@ -181,7 +184,7 @@ def analyze_asset(symbol, asset_type):
         signals.append("✅ السعر عند الحد السفلي BB")
     elif price >= bb_upper:
         score -= 2
-        signals.append(" السعر عند الحد العلوي BB")
+        signals.append("❌ السعر عند الحد العلوي BB")
     
     # المشتقات
     if p1 > 0 and p2 > 0:
@@ -253,7 +256,7 @@ def send_urgent_alert(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "text": f" <b>تنبيه عاجل!</b>\n\n{message}",
+        "text": f"🚨 <b>تنبيه عاجل!</b>\n\n{message}",
         "parse_mode": "HTML"
     }
     try:
@@ -275,8 +278,8 @@ def format_signal(r):
         msg += f"🛑 وقف الخسارة: ${r['sl']:.2f}\n"
         msg += f"🎯 الهدف 1: ${r['tp1']:.2f}\n"
         msg += f"🎯 الهدف 2: ${r['tp2']:.2f}\n"
-        msg += f" الهدف 3: ${r['tp3']:.2f}\n"
-        msg += f"️ المخاطرة/العائد: 1:{r['rr_ratio']:.1f}\n\n"
+        msg += f"🎯 الهدف 3: ${r['tp3']:.2f}\n"
+        msg += f"⚖️ المخاطرة/العائد: 1:{r['rr_ratio']:.1f}\n\n"
     
     msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
     return msg
@@ -335,7 +338,7 @@ def analyze_all():
     # فرص البيع
     sells = [r for r in all_results if r['score'] <= -3]
     if sells:
-        message += "\n <b>فرص البيع:</b>\n"
+        message += "\n🔴 <b>فرص البيع:</b>\n"
         message += "━━━━━━━━━━━━━━━━━━━━\n\n"
         for r in sells[:5]:
             message += format_signal(r)
@@ -415,7 +418,7 @@ def handle_command(command):
     
     elif command == '/crypto':
         send_message("⏳ جاري تحليل العملات...")
-        message = " <b>تقرير العملات الرقمية</b>\n\n"
+        message = "🪙 <b>تقرير العملات الرقمية</b>\n\n"
         for symbol in CRYPTO_LIST:
             result = analyze_asset(symbol, 'crypto')
             if result:
@@ -424,7 +427,7 @@ def handle_command(command):
     
     elif command == '/stocks':
         send_message("⏳ جاري تحليل الأسهم...")
-        message = " <b>تقرير الأسهم</b>\n\n"
+        message = "📈 <b>تقرير الأسهم</b>\n\n"
         for symbol in STOCKS_LIST:
             result = analyze_asset(symbol, 'stock')
             if result:
@@ -441,7 +444,7 @@ def handle_command(command):
         send_message(message)
     
     elif command == '/forex':
-        send_message(" جاري تحليل الفوركس...")
+        send_message("⏳ جاري تحليل الفوركس...")
         message = "💱 <b>تقرير الفوركس</b>\n\n"
         for symbol in FOREX_LIST:
             result = analyze_asset(symbol, 'forex')
@@ -477,20 +480,30 @@ def handle_command(command):
 """
         send_message(msg)
 
-# ========== 10. الاستماع للأوامر ==========
+# ========== 10. الاستماع للأوامر (تم إصلاحه لمنع التكرار) ==========
 def listen_for_commands():
-    """الاستماع لأوامر المستخدم من Telegram"""
+    """الاستماع لأوامر المستخدم من Telegram مع منع التكرار"""
+    global LAST_UPDATE_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    
+    # نطلب فقط الرسائل الجديدة التي تأتي بعد آخر رسالة تم معالجتها
+    params = {'offset': LAST_UPDATE_ID + 1, 'timeout': 10}
+    
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
         data = response.json()
         if data.get('ok') and data.get('result'):
             for update in data['result']:
+                update_id = update['update_id']
                 if 'message' in update and 'text' in update['message']:
                     command = update['message']['text'].strip()
                     if command.startswith('/'):
                         handle_command(command)
                         logger.info(f"تم تنفيذ الأمر: {command}")
+                
+                # تحديث آخر معرف رسالة تم معالجته
+                LAST_UPDATE_ID = max(LAST_UPDATE_ID, update_id)
+                
     except Exception as e:
         logger.error(f"Error listening: {e}")
 
@@ -508,27 +521,27 @@ def scheduled_tasks():
     # فحص التنبيهات العاجلة كل ساعة
     schedule.every(1).hours.do(check_urgent_signals)
     
-    # الاستماع للأوامر كل 30 ثانية
-    schedule.every(30).seconds.do(listen_for_commands)
+    # الاستماع للأوامر كل 10 ثواني (تم تقليله لتوفير الموارد ومنع الازدحام)
+    schedule.every(10).seconds.do(listen_for_commands)
     
-    logger.info("تم جدولة جميع المهام!")
+    logger.info("تم جدولة جميع المهام بنجاح!")
 
 # ========== 12. نقطة البداية ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 بوت التداول الذكي - الإصدار الاحترافي")
+    print("🤖 بوت التداول الذكي - الإصدار الاحترافي (مصحح)")
     print("=" * 60)
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n✅ البوت جاهز للعمل!")
     print("📊 التقارير التلقائية: كل 6 ساعات")
     print("🔔 التنبيهات العاجلة: كل ساعة")
-    print("💬 الأوامر التفاعلية: كل 30 ثانية")
+    print("💬 الأوامر التفاعلية: كل 10 ثواني (بدون تكرار)")
     print("\nاضغط Ctrl+C للإيقاف\n")
     
     # جدولة المهام
     scheduled_tasks()
     
-    # تشغيل تقرير فوري عند البدء
+    # تشغيل تقرير أولي عند البدء
     logger.info("تشغيل تقرير أولي...")
     analyze_all()
     
