@@ -5,7 +5,6 @@ import yfinance as yf
 from datetime import datetime
 import logging
 import os
-import google.generativeai as genai
 
 # ========== إعدادات السجل ==========
 logging.basicConfig(
@@ -23,14 +22,13 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8917209003:AAFEDVugxuj6LEzELv
 CHAT_ID = os.environ.get("CHAT_ID", "1814016230")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# تهيئة Gemini
+# رابط Gemini API مباشرة
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.0-flash')
     logger.info("✅ تم تهيئة Gemini AI بنجاح")
 else:
-    model = None
-    logger.warning("️ مفتاح Gemini غير موجود - الذكاء الاصطناعي معطل")
+    logger.warning("⚠️ مفتاح Gemini غير موجود - الذكاء الاصطناعي معطل")
 
 # ========== متغير لتتبع آخر رسالة ==========
 LAST_UPDATE_ID = 0
@@ -165,7 +163,7 @@ def analyze_asset(symbol, asset_type):
         signals.append(f"✅ RSI={rsi:.1f} تشبع بيعي")
     elif rsi > 70:
         score -= 2
-        signals.append(f"❌ RSI={rsi:.1f} تشبع شرائي")
+        signals.append(f" RSI={rsi:.1f} تشبع شرائي")
     else:
         signals.append(f"⚪ RSI={rsi:.1f} محايد")
     
@@ -212,7 +210,7 @@ def analyze_asset(symbol, asset_type):
         rec = "🔴🔴 بيع قوي جداً"
         direction = 'sell'
     elif score <= -3:
-        rec = "🔴 بيع"
+        rec = " بيع"
         direction = 'sell'
     else:
         rec = "⚪ انتظار"
@@ -293,7 +291,7 @@ def analyze_all():
     
     buys = [r for r in all_results if r['score'] >= 3]
     if buys:
-        message += "🟢 <b>فرص الشراء:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        message += " <b>فرص الشراء:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
         for r in buys[:5]: message += format_signal(r)
     
     sells = [r for r in all_results if r['score'] <= -3]
@@ -324,10 +322,10 @@ def check_urgent_signals():
                 send_urgent_alert(msg)
         time.sleep(0.5)
 
-# ========== 6. الذكاء الاصطناعي - Gemini ==========
+# ========== 6. الذكاء الاصطناعي - Gemini (HTTP مباشر) ==========
 def ask_gemini(question, context=""):
-    """إرسال سؤال إلى Gemini والحصول على رد ذكي"""
-    if not model:
+    """إرسال سؤال إلى Gemini عبر HTTP مباشرة"""
+    if not GEMINI_API_KEY:
         return "⚠️ الذكاء الاصطناعي غير مفعّل حالياً. يرجى إضافة مفتاح GEMINI_API_KEY."
     
     try:
@@ -339,8 +337,24 @@ def ask_gemini(question, context=""):
 
 ⚠️ مهم: اذكر دائماً أن هذا ليس نصيحة مالية، وأن التداول ينطوي على مخاطر."""
         
-        response = model.generate_content(prompt)
-        return response.text
+        url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1024
+            }
+        }
+        
+        response = requests.post(url, json=payload, timeout=30)
+        data = response.json()
+        
+        if 'candidates' in data and len(data['candidates']) > 0:
+            return data['candidates'][0]['content']['parts'][0]['text']
+        else:
+            error_msg = data.get('error', {}).get('message', 'غير معروف')
+            return f"❌ لم أتمكن من الحصول على إجابة. الخطأ: {error_msg}"
+            
     except Exception as e:
         logger.error(f"Gemini error: {e}")
         return f"❌ حدث خطأ في الذكاء الاصطناعي: {str(e)}"
@@ -404,7 +418,7 @@ def handle_command(command, user_message=""):
         send_message(message)
     
     elif cmd == '/stocks':
-        send_message(" جاري تحليل الأسهم...")
+        send_message("⏳ جاري تحليل الأسهم...")
         message = "📈 <b>تقرير الأسهم</b>\n\n"
         for symbol in STOCKS_LIST:
             result = analyze_asset(symbol, 'stock')
@@ -412,8 +426,8 @@ def handle_command(command, user_message=""):
         send_message(message)
     
     elif cmd == '/metals':
-        send_message("⏳ جاري تحليل المعادن...")
-        message = " <b>تقرير المعادن</b>\n\n"
+        send_message(" جاري تحليل المعادن...")
+        message = "🥇 <b>تقرير المعادن</b>\n\n"
         for symbol in METALS_LIST:
             result = analyze_asset(symbol, 'metal')
             if result: message += format_signal(result)
@@ -421,7 +435,7 @@ def handle_command(command, user_message=""):
     
     elif cmd == '/forex':
         send_message("⏳ جاري تحليل الفوركس...")
-        message = " <b>تقرير الفوركس</b>\n\n"
+        message = "💱 <b>تقرير الفوركس</b>\n\n"
         for symbol in FOREX_LIST:
             result = analyze_asset(symbol, 'forex')
             if result: message += format_signal(result)
@@ -435,7 +449,7 @@ def handle_command(command, user_message=""):
     elif cmd.startswith('/ask '):
         question = command[5:].strip()
         if not question:
-            send_message("❌ يرجى كتابة سؤال بعد /ask\nمثال: /ask ما هو أفضل وقت لشراء Bitcoin؟")
+            send_message(" يرجى كتابة سؤال بعد /ask\nمثال: /ask ما هو أفضل وقت لشراء Bitcoin؟")
             return
         send_message("🧠 جاري التفكير...")
         answer = ask_gemini(question)
@@ -446,14 +460,14 @@ def handle_command(command, user_message=""):
         send_message(f"🔍 جاري التحليل الذكي لـ {symbol}...")
         context = get_asset_context(symbol)
         if not context:
-            send_message(f"❌ لم أتمكن من العثور على بيانات {symbol}")
+            send_message(f" لم أتمكن من العثور على بيانات {symbol}")
             return
         question = f"حلل {symbol} بشكل معمق وأعطِ توصية واضحة مع الأسباب"
         answer = ask_gemini(question, context)
         send_message(f" <b>تحليل ذكي لـ {symbol}:</b>\n\n{answer}")
     
     elif cmd == '/strategy':
-        send_message("🧠 جاري إعداد نصائح استراتيجية...")
+        send_message(" جاري إعداد نصائح استراتيجية...")
         question = "أعطني 5 نصائح استراتيجية مهمة للتداول الآمن وإدارة المخاطر للمبتدئين"
         answer = ask_gemini(question)
         send_message(f"📚 <b>نصائح استراتيجية:</b>\n\n{answer}")
@@ -462,13 +476,13 @@ def handle_command(command, user_message=""):
         send_message("🧠 جاري جلب آخر الأخبار الاقتصادية...")
         question = "ما هي أهم الأخبار الاقتصادية والتطورات في أسواق المال اليوم؟ (كريبتو، أسهم، فوركس)"
         answer = ask_gemini(question)
-        send_message(f"📰 <b>آخر الأخبار:</b>\n\n{answer}")
+        send_message(f" <b>آخر الأخبار:</b>\n\n{answer}")
     
     elif cmd == '/help':
         msg = """
 📚 <b>دليل البوت الذكي:</b>
 
-<b> التقارير:</b>
+<b>📊 التقارير:</b>
 /report - تقرير شامل
 /crypto - العملات فقط
 /stocks - الأسهم فقط
@@ -484,13 +498,13 @@ def handle_command(command, user_message=""):
 <b>🔔 التنبيهات:</b>
 /urgent - فحص فوري
 
-️ <i>التداول ينطوي على مخاطر.</i>
+⚠️ <i>التداول ينطوي على مخاطر.</i>
 """
         send_message(msg)
     
     else:
         # رسالة عادية - الرد بالذكاء الاصطناعي
-        if model:
+        if GEMINI_API_KEY:
             send_message("🧠 جاري التفكير في إجابتك...")
             answer = ask_gemini(command)
             send_message(f"🤖 {answer}")
@@ -513,16 +527,14 @@ def listen_for_commands():
                     text = update['message']['text'].strip()
                     chat_id = str(update['message']['chat']['id'])
                     
-                    # التأكد من أن الرسالة من المالك فقط
                     if chat_id == CHAT_ID:
                         if text.startswith('/'):
                             handle_command(text)
                         else:
-                            # رسالة عادية - استخدم الذكاء الاصطناعي
-                            if model:
-                                send_message(" جاري التفكير...")
+                            if GEMINI_API_KEY:
+                                send_message("🧠 جاري التفكير...")
                                 answer = ask_gemini(text)
-                                send_message(f" {answer}")
+                                send_message(f"🤖 {answer}")
                             else:
                                 send_message("💬 استخدم /help لرؤية الأوامر المتاحة")
                         
@@ -545,14 +557,14 @@ def scheduled_tasks():
 # ========== 10. نقطة البداية ==========
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 بوت التداول الذكي - مع Gemini AI")
+    print("🤖 بوت التداول الذكي - مع Gemini AI (HTTP مباشر)")
     print("=" * 60)
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f" Gemini AI: {'✅ مفعّل' if model else '❌ غير مفعّل'}")
+    print(f"🧠 Gemini AI: {'✅ مفعّل' if GEMINI_API_KEY else '❌ غير مفعّل'}")
     print("\n✅ البوت جاهز للعمل!")
     print("📊 التقارير التلقائية: كل 6 ساعات")
     print("🔔 التنبيهات العاجلة: كل ساعة")
-    print("🧠 الذكاء الاصطناعي: نشط")
+    print(" الذكاء الاصطناعي: نشط")
     print("\nاضغط Ctrl+C للإيقاف\n")
     
     scheduled_tasks()
