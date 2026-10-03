@@ -395,7 +395,7 @@ def ask_claude(question, context=""):
             "X-Title": "Trading Bot"
         }
         payload = {
-            "model": "anthropic/claude-3.5-sonnet",
+            "model": "anthropic/claude-sonnet-4",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "max_tokens": 4096
