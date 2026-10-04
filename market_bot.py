@@ -1,3 +1,4 @@
+
 import requests
 import time
 import schedule
@@ -191,7 +192,7 @@ def analyze_asset(symbol, asset_type):
         signals.append("✅ السعر فوق EMA20 و EMA50")
     elif price < ema20 < ema50:
         score -= 2
-        signals.append(" السعر تحت EMA20 و EMA50")
+        signals.append("❌ السعر تحت EMA20 و EMA50")
     else:
         signals.append("⚪ EMA محايد")
     
@@ -214,19 +215,19 @@ def analyze_asset(symbol, asset_type):
         signals.append("✅ تسارع صعودي")
     elif p1 < 0 and p2 < 0:
         score -= 1
-        signals.append(" تسارع هبوطي")
+        signals.append("❌ تسارع هبوطي")
     elif p1 < 0 and p2 > 0:
         score += 1
         signals.append("🔄 تباطؤ الهبوط")
     
     if score >= 5:
-        rec = "🟢 شراء قوي جداً"
+        rec = "🟢🟢 شراء قوي جداً"
         direction = 'buy'
     elif score >= 3:
-        rec = "🟢 شراء"
+        rec = " شراء"
         direction = 'buy'
     elif score <= -5:
-        rec = "🔴🔴 بيع قوي جداً"
+        rec = "🔴 بيع قوي جداً"
         direction = 'sell'
     elif score <= -3:
         rec = "🔴 بيع"
@@ -249,159 +250,163 @@ def analyze_asset(symbol, asset_type):
 
 # ========== نظام التحليل الموحد ==========
 def unified_analysis(symbol, asset_type, balance=10000):
-    """تحليل شامل يجمع كل المعادلات"""
-    
-    if asset_type == 'crypto':
-        data = fetch_crypto(symbol)
-    else:
-        data = fetch_stock(symbol)
-    
-    if not data or len(data['closes']) < 100:
+    try:
+        if asset_type == 'crypto':
+            data = fetch_crypto(symbol)
+        else:
+            data = fetch_stock(symbol)
+        
+        if not data or len(data['closes']) < 50:
+            return None
+        
+        closes = np.array(data['closes'], dtype=float)
+        highs = np.array(data['highs'], dtype=float)
+        lows = np.array(data['lows'], dtype=float)
+        current_price = float(closes[-1])
+        
+        rsi = calc_rsi(closes)
+        ema20 = calc_ema(closes, 20)
+        ema50 = calc_ema(closes, 50)
+        macd = calc_macd(closes)
+        atr = calc_atr(highs, lows, closes)
+        
+        returns = np.diff(np.log(closes))
+        lookback = min(50, len(closes) - 1)
+        spread_lag = closes[-lookback-1:-1]
+        spread_diff = np.diff(closes[-lookback-1:])
+        
+        if len(spread_lag) < 10:
+            ou_theta = 0.01
+            ou_mu = current_price
+            ou_z_score = 0.0
+            ou_half_life = 999.0
+        else:
+            slope, intercept, r_value, p_value, std_err = linregress(spread_lag, spread_diff)
+            ou_theta = float(-slope) if slope < 0 else 0.01
+            ou_mu = float(np.mean(closes[-lookback:]))
+            ou_sigma = float(np.std(returns[-lookback:])) * np.sqrt(252)
+            ou_half_life = float(np.log(2) / ou_theta) if ou_theta > 0 else 999.0
+            ou_z_score = float((current_price - ou_mu) / (ou_sigma * current_price)) if ou_sigma > 0 else 0.0
+        
+        wins = 0
+        total = 0
+        lookback_kelly = min(50, len(closes) - 5)
+        for i in range(-lookback_kelly, -5):
+            if closes[i+5] > closes[i]:
+                wins += 1
+            total += 1
+        
+        win_rate = float(wins / total) if total > 0 else 0.5
+        win_loss_ratio = 2.0 if current_price > ema20 else 1.5
+        kelly_edge = float((win_rate * win_loss_ratio) - (1 - win_rate))
+        kelly_full = float(kelly_edge / win_loss_ratio) if win_loss_ratio > 0 else 0.0
+        kelly_half = min(float(kelly_full / 2), 0.25)
+        kelly_quarter = float(kelly_full / 4)
+        
+        mu_return = float(np.mean(returns))
+        sigma_return = float(np.std(returns))
+        
+        np.random.seed(42)
+        simulations = 1000
+        days = 30
+        simulated = np.zeros((simulations, days + 1))
+        simulated[:, 0] = current_price
+        
+        for t in range(1, days + 1):
+            random_returns = np.random.normal(mu_return, sigma_return, simulations)
+            simulated[:, t] = simulated[:, t-1] * np.exp(random_returns)
+        
+        final_prices = simulated[:, -1]
+        prob_profit = float(np.sum(final_prices > current_price) / simulations * 100)
+        prob_loss_10 = float(np.sum(final_prices < current_price * 0.9) / simulations * 100)
+        prob_gain_10 = float(np.sum(final_prices > current_price * 1.1) / simulations * 100)
+        percentile_5 = float(np.percentile(final_prices, 5))
+        percentile_95 = float(np.percentile(final_prices, 95))
+        
+        vol_current = float(np.std(returns[-20:])) * np.sqrt(252) if len(returns) >= 20 else float(np.std(returns)) * np.sqrt(252)
+        vol_long_term = float(np.std(returns)) * np.sqrt(252)
+        
+        risk_amount = balance * kelly_half
+        sl_distance = atr * 1.5
+        position_size = risk_amount / sl_distance if sl_distance > 0 else 0.0
+        notional_value = position_size * current_price
+        
+        direction = 'buy' if current_price > ema20 and rsi < 70 else 'sell'
+        
+        if direction == 'buy':
+            sl = current_price - (atr * 1.5)
+            tp1 = current_price + (atr * 2)
+            tp2 = current_price + (atr * 3)
+            tp3 = current_price + (atr * 4.5)
+        else:
+            sl = current_price + (atr * 1.5)
+            tp1 = current_price - (atr * 2)
+            tp2 = current_price - (atr * 3)
+            tp3 = current_price - (atr * 4.5)
+        
+        risk_reward = float(abs(tp2 - current_price) / abs(current_price - sl)) if abs(current_price - sl) > 0 else 0.0
+        
+        score = 0
+        if rsi < 30: score += 3
+        elif rsi < 40: score += 2
+        elif rsi > 70: score -= 3
+        elif rsi > 60: score -= 1
+        
+        if current_price > ema20 > ema50: score += 3
+        elif current_price < ema20 < ema50: score -= 3
+        
+        if macd > 0: score += 2
+        else: score -= 2
+        
+        if ou_z_score < -2: score += 3
+        elif ou_z_score > 2: score -= 3
+        
+        if prob_profit > 60: score += 2
+        elif prob_profit < 40: score -= 2
+        
+        if kelly_edge > 0.1: score += 2
+        elif kelly_edge < 0: score -= 3
+        
+        if score >= 8:
+            recommendation = "🟢 شراء قوي جداً"
+            confidence = "عالية جداً"
+        elif score >= 5:
+            recommendation = "🟢 شراء"
+            confidence = "عالية"
+        elif score >= 2:
+            recommendation = "🟡 شراء حذر"
+            confidence = "متوسطة"
+        elif score <= -8:
+            recommendation = "🔴🔴 بيع قوي جداً"
+            confidence = "عالية جداً"
+        elif score <= -5:
+            recommendation = " بيع"
+            confidence = "عالية"
+        elif score <= -2:
+            recommendation = "🟡 بيع حذر"
+            confidence = "متوسطة"
+        else:
+            recommendation = "⚪ انتظار"
+            confidence = "منخفضة"
+        
+        return {
+            'symbol': symbol, 'type': asset_type, 'price': current_price,
+            'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
+            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+            'risk_reward': risk_reward, 'ou_theta': ou_theta, 'ou_mu': ou_mu,
+            'ou_z_score': ou_z_score, 'ou_half_life': ou_half_life,
+            'win_rate': win_rate, 'kelly_edge': kelly_edge, 'kelly_full': kelly_full,
+            'kelly_half': kelly_half, 'kelly_quarter': kelly_quarter,
+            'position_size': position_size, 'notional_value': notional_value,
+            'risk_amount': risk_amount, 'prob_profit': prob_profit,
+            'prob_loss_10': prob_loss_10, 'prob_gain_10': prob_gain_10,
+            'percentile_5': percentile_5, 'percentile_95': percentile_95,
+            'vol_current': vol_current, 'vol_long_term': vol_long_term,
+            'score': score, 'recommendation': recommendation, 'confidence': confidence
+        }
+    except Exception as e:
+        logger.error(f"خطأ في unified_analysis لـ {symbol}: {e}")
         return None
-    
-    closes = np.array(data['closes'])
-    highs = np.array(data['highs'])
-    lows = np.array(data['lows'])
-    current_price = closes[-1]
-    
-    rsi = calc_rsi(closes)
-    ema20 = calc_ema(closes, 20)
-    ema50 = calc_ema(closes, 50)
-    macd = calc_macd(closes)
-    atr = calc_atr(highs, lows, closes)
-    
-    returns = np.diff(np.log(closes))
-    spread_lag = closes[:-1]
-    spread_diff = np.diff(closes)
-    
-    slope, intercept, r_value, p_value, std_err = linregress(spread_lag[-50:], spread_diff[-50:])
-    
-    ou_theta = -slope if slope < 0 else 0.01
-    ou_mu = np.mean(closes[-100:])
-    ou_sigma = np.std(returns[-100:]) * np.sqrt(252)
-    ou_half_life = np.log(2) / ou_theta if ou_theta > 0 else 999
-    ou_z_score = (current_price - ou_mu) / (ou_sigma * current_price)
-    
-    wins = 0
-    total = 0
-    for i in range(-50, -5):
-        if closes[i+5] > closes[i]:
-            wins += 1
-        total += 1
-    
-    win_rate = wins / total if total > 0 else 0.5
-    
-    if current_price > ema20:
-        win_loss_ratio = 2.0
-    else:
-        win_loss_ratio = 1.5
-    
-    kelly_edge = (win_rate * win_loss_ratio) - (1 - win_rate)
-    kelly_full = kelly_edge / win_loss_ratio if win_loss_ratio > 0 else 0
-    kelly_half = min(kelly_full / 2, 0.25)
-    kelly_quarter = kelly_full / 4
-    
-    mu_return = np.mean(returns)
-    sigma_return = np.std(returns)
-    
-    np.random.seed(42)
-    simulations = 1000
-    days = 30
-    simulated = np.zeros((simulations, days + 1))
-    simulated[:, 0] = current_price
-    
-    for t in range(1, days + 1):
-        random_returns = np.random.normal(mu_return, sigma_return, simulations)
-        simulated[:, t] = simulated[:, t-1] * np.exp(random_returns)
-    
-    final_prices = simulated[:, -1]
-    prob_profit = np.sum(final_prices > current_price) / simulations * 100
-    prob_loss_10 = np.sum(final_prices < current_price * 0.9) / simulations * 100
-    prob_gain_10 = np.sum(final_prices > current_price * 1.1) / simulations * 100
-    percentile_5 = np.percentile(final_prices, 5)
-    percentile_95 = np.percentile(final_prices, 95)
-    
-    vol_current = np.std(returns[-20:]) * np.sqrt(252)
-    vol_long_term = np.std(returns) * np.sqrt(252)
-    
-    risk_amount = balance * kelly_half
-    sl_distance = atr * 1.5
-    position_size = risk_amount / sl_distance if sl_distance > 0 else 0
-    notional_value = position_size * current_price
-    
-    direction = 'buy' if current_price > ema20 and rsi < 70 else 'sell'
-    
-    if direction == 'buy':
-        sl = current_price - (atr * 1.5)
-        tp1 = current_price + (atr * 2)
-        tp2 = current_price + (atr * 3)
-        tp3 = current_price + (atr * 4.5)
-    else:
-        sl = current_price + (atr * 1.5)
-        tp1 = current_price - (atr * 2)
-        tp2 = current_price - (atr * 3)
-        tp3 = current_price - (atr * 4.5)
-    
-    risk_reward = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
-    
-    score = 0
-    if rsi < 30: score += 3
-    elif rsi < 40: score += 2
-    elif rsi > 70: score -= 3
-    elif rsi > 60: score -= 1
-    
-    if current_price > ema20 > ema50: score += 3
-    elif current_price < ema20 < ema50: score -= 3
-    
-    if macd > 0: score += 2
-    else: score -= 2
-    
-    if ou_z_score < -2: score += 3
-    elif ou_z_score > 2: score -= 3
-    
-    if prob_profit > 60: score += 2
-    elif prob_profit < 40: score -= 2
-    
-    if kelly_edge > 0.1: score += 2
-    elif kelly_edge < 0: score -= 3
-    
-    if score >= 8:
-        recommendation = "🟢🟢 شراء قوي جداً"
-        confidence = "عالية جداً"
-    elif score >= 5:
-        recommendation = " شراء"
-        confidence = "عالية"
-    elif score >= 2:
-        recommendation = "🟡 شراء حذر"
-        confidence = "متوسطة"
-    elif score <= -8:
-        recommendation = "🔴🔴 بيع قوي جداً"
-        confidence = "عالية جداً"
-    elif score <= -5:
-        recommendation = "🔴 بيع"
-        confidence = "عالية"
-    elif score <= -2:
-        recommendation = "🟡 بيع حذر"
-        confidence = "متوسطة"
-    else:
-        recommendation = "⚪ انتظار"
-        confidence = "منخفضة"
-    
-    return {
-        'symbol': symbol, 'type': asset_type, 'price': current_price,
-        'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
-        'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
-        'risk_reward': risk_reward, 'ou_theta': ou_theta, 'ou_mu': ou_mu,
-        'ou_z_score': ou_z_score, 'ou_half_life': ou_half_life,
-        'win_rate': win_rate, 'kelly_edge': kelly_edge, 'kelly_full': kelly_full,
-        'kelly_half': kelly_half, 'kelly_quarter': kelly_quarter,
-        'position_size': position_size, 'notional_value': notional_value,
-        'risk_amount': risk_amount, 'prob_profit': prob_profit,
-        'prob_loss_10': prob_loss_10, 'prob_gain_10': prob_gain_10,
-        'percentile_5': percentile_5, 'percentile_95': percentile_95,
-        'vol_current': vol_current, 'vol_long_term': vol_long_term,
-        'score': score, 'recommendation': recommendation, 'confidence': confidence
-    }
 
 def format_unified_analysis(result):
     msg = f"""
@@ -482,11 +487,11 @@ def send_urgent_alert(message):
 def format_signal(r):
     msg = f"<b> {r['symbol']}</b> ({r['type']})\n"
     msg += f"💰 السعر: ${r['price']:.2f}\n"
-    msg += f"📈 RSI: {r['rsi']:.1f}\n"
-    msg += f"🎯 التوصية: {r['recommendation']}\n"
+    msg += f" RSI: {r['rsi']:.1f}\n"
+    msg += f" التوصية: {r['recommendation']}\n"
     msg += f"📊 النقاط: {r['score']}\n\n"
     if r['direction']:
-        msg += f"🛑 وقف الخسارة: ${r['sl']:.2f}\n"
+        msg += f" وقف الخسارة: ${r['sl']:.2f}\n"
         msg += f"🎯 الهدف 1: ${r['tp1']:.2f}\n"
         msg += f"🎯 الهدف 2: ${r['tp2']:.2f}\n"
         msg += f"🎯 الهدف 3: ${r['tp3']:.2f}\n"
@@ -526,12 +531,12 @@ def analyze_all():
     
     sells = [r for r in all_results if r['score'] <= -3]
     if sells:
-        message += "\n🔴 <b>فرص البيع:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        message += "\n <b>فرص البيع:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
         for r in sells[:5]: message += format_signal(r)
     
     waits = [r for r in all_results if -3 < r['score'] < 3]
     if waits:
-        message += "\n <b>انتظار:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        message += "\n⚪ <b>انتظار:</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
         for r in waits[:7]:
             message += f"• <b>{r['symbol']}</b> ({r['type']})\n  السعر: ${r['price']:.2f} | RSI: {r['rsi']:.1f}\n\n"
     
@@ -545,7 +550,7 @@ def check_urgent_signals():
         result = analyze_asset(symbol, 'crypto')
         if result:
             if result['rsi'] < 25:
-                msg = f"<b>{result['symbol']}</b>\nRSI = {result['rsi']:.1f} (تشبع بيعي قوي!)\nالسعر: ${result['price']:.2f}\n\n فرصة شراء قوية!"
+                msg = f"<b>{result['symbol']}</b>\nRSI = {result['rsi']:.1f} (تشبع بيعي قوي!)\nالسعر: ${result['price']:.2f}\n\n🟢 فرصة شراء قوية!"
                 send_urgent_alert(msg)
             elif result['rsi'] > 75:
                 msg = f"<b>{result['symbol']}</b>\nRSI = {result['rsi']:.1f} (تشبع شرائي قوي!)\nالسعر: ${result['price']:.2f}\n\n🔴 فرصة بيع قوية!"
@@ -621,7 +626,7 @@ def ask_qwen(question, context=""):
         if 'choices' in data and len(data['choices']) > 0:
             return data['choices'][0]['message']['content']
         else:
-            return f"❌ خطأ Qwen: {data.get('error', {}).get('message', 'غير معروف')}"
+            return f" خطأ Qwen: {data.get('error', {}).get('message', 'غير معروف')}"
     except Exception as e:
         return f"❌ خطأ Qwen: {str(e)}"
 
@@ -650,7 +655,7 @@ def ask_ai(question, context="", model_preference="auto"):
         except Exception as e:
             logger.error(f"Groq failed: {e}")
     
-    return " عذراً، لم أتمكن من الحصول على إجابة."
+    return "❌ عذراً، لم أتمكن من الحصول على إجابة."
 
 # ========== معالجة الأوامر ==========
 def handle_command(command):
@@ -681,7 +686,7 @@ def handle_command(command):
         send_message(msg)
     
     elif cmd == '/report':
-        send_message(" جاري إعداد التقرير...")
+        send_message("⏳ جاري إعداد التقرير...")
         analyze_all()
     
     elif cmd == '/crypto':
@@ -694,7 +699,7 @@ def handle_command(command):
     
     elif cmd == '/stocks':
         send_message("⏳ جاري تحليل الأسهم...")
-        message = "📈 <b>تقرير الأسهم</b>\n\n"
+        message = " <b>تقرير الأسهم</b>\n\n"
         for symbol in STOCKS_LIST:
             result = analyze_asset(symbol, 'stock')
             if result: message += format_signal(result)
@@ -726,16 +731,16 @@ def handle_command(command):
         if not question:
             send_message("❌ يرجى كتابة سؤال بعد /ask")
             return
-        send_message(" جاري التفكير...")
+        send_message("🧠 جاري التفكير...")
         answer = ask_ai(question)
-        send_message(f" <b>الإجابة:</b>\n\n{answer}")
+        send_message(f"🤖 <b>الإجابة:</b>\n\n{answer}")
     
     elif cmd.startswith('/qwen '):
         question = command[6:].strip()
         if not question:
             send_message("❌ يرجى كتابة سؤال بعد /qwen")
             return
-        send_message("🧠 جاري التفكير مع Qwen...")
+        send_message(" جاري التفكير مع Qwen...")
         answer = ask_qwen(question)
         send_message(f"🤖 <b>Qwen 2.5 72B:</b>\n\n{answer}")
     
@@ -751,11 +756,11 @@ def handle_command(command):
         model = parts[1].lower()
         question = parts[2]
         if model not in ['groq', 'qwen']:
-            send_message("❌ النماذج: groq, qwen")
+            send_message(" النماذج: groq, qwen")
             return
         send_message(f"🧠 جاري التفكير مع {model.upper()}...")
         answer = ask_ai(question, model_preference=model)
-        send_message(f" <b>{model.upper()}:</b>\n\n{answer}")
+        send_message(f"🤖 <b>{model.upper()}:</b>\n\n{answer}")
     
     elif cmd.startswith('/smart'):
         parts = command.split()
@@ -787,18 +792,18 @@ def handle_command(command):
         else:
             asset_type = 'stock'
         
-        send_message(f" جاري التحليل الشامل لـ {symbol}...")
+        send_message(f"🧮 جاري التحليل الشامل لـ {symbol}...")
         
         result = unified_analysis(symbol, asset_type)
         
         if not result:
-            send_message(f"❌ فشل في تحليل {symbol}")
+            send_message(f"❌ فشل في تحليل {symbol}\n\nالأسباب المحتملة:\n• بيانات غير كافية\n• خطأ في الاتصال بـ API\n• الرمز غير صحيح")
             return
         
         msg = format_unified_analysis(result)
         send_message(msg)
         
-        send_message("🧠 جاري التحليل الذكي...")
+        send_message(" جاري التحليل الذكي...")
         
         context = f"""
 بيانات {result['symbol']}:
@@ -836,7 +841,7 @@ def handle_command(command):
 🔔 التنبيهات:
 /urgent
 
-️ التداول ينطوي على مخاطر.
+⚠️ التداول ينطوي على مخاطر.
 """
         send_message(msg)
     
@@ -896,7 +901,7 @@ if __name__ == "__main__":
     print("🤖 بوت التداول الذكي - Qwen + Groq")
     print("=" * 60)
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f" Groq: {'✅' if GROQ_API_KEY else '❌'}")
+    print(f"🧠 Groq: {'✅' if GROQ_API_KEY else '❌'}")
     print(f"🧠 OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}")
     print("\n✅ البوت جاهز!")
     
