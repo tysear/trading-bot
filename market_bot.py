@@ -62,31 +62,48 @@ def run_flask():
 # ========== جلب البيانات ==========
 def fetch_crypto(symbol):
     try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {'symbol': symbol, 'interval': '1d', 'limit': 100}
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        closes = [float(candle[4]) for candle in data]
-        highs = [float(candle[2]) for candle in data]
-        lows = [float(candle[3]) for candle in data]
-        return {'closes': closes, 'highs': highs, 'lows': lows}
-    except Exception as e:
-        logger.error(f"Error fetching {symbol}: {e}")
-        return None
 
-def fetch_stock(symbol):
+def fetch_crypto(symbol):
+    """جلب بيانات العملات الرقمية باستخدام yfinance"""
     try:
-        ticker = yf.Ticker(symbol)
+        # تحويل الرمز لصيغة yfinance
+        if symbol.endswith('USDT'):
+            yf_symbol = symbol.replace('USDT', '-USD')
+        else:
+            yf_symbol = symbol
+        
+        logger.info(f"جلب بيانات {symbol} كـ {yf_symbol} من yfinance...")
+        
+        ticker = yf.Ticker(yf_symbol)
         hist = ticker.history(period="3mo")
+        
         if hist.empty:
+            logger.error(f"لا توجد بيانات لـ {yf_symbol}")
             return None
+        
         closes = hist['Close'].tolist()
         highs = hist['High'].tolist()
         lows = hist['Low'].tolist()
+        
+        logger.info(f"تم جلب {len(closes)} يوم لـ {symbol}, السعر: ${closes[-1]:.2f}")
+        
         return {'closes': closes, 'highs': highs, 'lows': lows}
+    
     except Exception as e:
-        logger.error(f"Error fetching {symbol}: {e}")
+        logger.error(f"خطأ في fetch_crypto لـ {symbol}: {e}")
         return None
+
+
+
+
+
+
+
+
+
+
+
+        
 
 # ========== المؤشرات الفنية ==========
 def calc_rsi(prices, period=14):
