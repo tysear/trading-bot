@@ -19,9 +19,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8917209003:AAFEDVugxuj6LEzELv8NtkoCav5Zwqn8f_E")
 CHAT_ID = os.environ.get("CHAT_ID", "1814016230")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 LAST_UPDATE_ID = 0
@@ -76,7 +74,8 @@ def calc_rsi(prices, period=14):
     gains, losses = [], []
     for i in range(-period, 0):
         change = prices[i] - prices[i-1]
-        gains.append(max(change, 0)); losses.append(max(-change, 0))
+        gains.append(max(change, 0))
+        losses.append(max(-change, 0))
     avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
     if avg_loss == 0: return 100
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
@@ -113,7 +112,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         macd = calc_macd(closes)
         atr = calc_atr(highs, lows, closes)
         
-        # Ornstein-Uhlenbeck
         returns = np.diff(np.log(closes))
         lookback = min(50, len(closes) - 1)
         slope, intercept, r_val, p_val, std_err = linregress(closes[-lookback-1:-1], np.diff(closes[-lookback-1:]))
@@ -123,7 +121,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         ou_half_life = float(np.log(2) / ou_theta) if ou_theta > 0 else 999.0
         ou_z_score = float((current_price - ou_mu) / (ou_sigma * current_price)) if ou_sigma > 0 else 0.0
         
-        # Kelly Criterion
         wins = sum(1 for i in range(-min(50, len(closes)-5), -5) if closes[i+5] > closes[i])
         total = min(50, len(closes) - 5)
         win_rate = float(wins / total) if total > 0 else 0.5
@@ -132,7 +129,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         kelly_full = float(kelly_edge / win_loss_ratio) if win_loss_ratio > 0 else 0.0
         kelly_half = min(float(kelly_full / 2), 0.25)
         
-        # Monte Carlo (Exact GBM)
         mu_daily, sigma_daily = float(np.mean(returns)), float(np.std(returns))
         np.random.seed(42)
         simulated = np.zeros((1000, 31))
@@ -147,7 +143,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         percentile_5 = float(np.percentile(final_prices, 5))
         percentile_95 = float(np.percentile(final_prices, 95))
         
-        # Volume Analysis
         vol_msg = "محايد"
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
@@ -155,12 +150,21 @@ def unified_analysis(symbol, asset_type, balance=10000):
             if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع (تأكيد الاتجاه) 📈"
             elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض (ضعف الاتجاه) 📉"
         
-        # Risk & Position Sizing
         risk_amount = balance * kelly_half
         sl_dist = atr * 1.5
         position_size = risk_amount / sl_dist if sl_dist > 0 else 0.0
         
-        direction = 'buy' if current_price > ema20 and rsi < 70 else 'sell'
+        # ✅ نظام التصويت لتحديد الاتجاه (Majority Voting)
+        buy_signals = 0
+        if current_price > ema20: buy_signals += 1
+        if current_price > ema50: buy_signals += 1
+        if macd > 0: buy_signals += 1
+        if rsi < 75: buy_signals += 1
+        if prob_profit > 55: buy_signals += 1
+        if ou_z_score < 1.5: buy_signals += 1
+        
+        direction = 'buy' if buy_signals >= 4 else 'sell'
+        
         if direction == 'buy':
             sl = current_price - (atr*1.5)
             tp1 = current_price + (atr*2)
@@ -173,7 +177,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
             tp3 = current_price - (atr*4.5)
         rr = float(abs(tp2 - current_price) / abs(current_price - sl)) if abs(current_price - sl) > 0 else 0.0
         
-        # Scoring (Technical only)
         tech_score = 0
         if rsi < 30: tech_score += 3
         elif rsi > 70: tech_score -= 3
@@ -205,7 +208,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         return None
 
 def ask_qwen_unified(data):
-    """دمج كل البيانات والأخبار في طلب واحد لـ Qwen"""
     if not OPENROUTER_API_KEY: return None
     
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
@@ -231,7 +233,7 @@ def ask_qwen_unified(data):
 {news_text}
 
 🎯 المطلوب (بالعربية، بشكل منظم):
-1. القرار النهائي الموحد: (شراء قوي  / شراء 🟢 / انتظار ⚪ / بيع 🔴 / بيع قوي 🔴)
+1. القرار النهائي الموحد: (شراء قوي 🟢 / شراء 🟢 / انتظار ⚪ / بيع 🔴 / بيع قوي 🔴🔴)
 2. التفسير: لماذا هذا القرار؟ (ادمج بين الفني والأخبار في تفسير واحد)
 3. حجم الصفقة المقترح: (نسبة من رأس المال)
 4. المخاطر الرئيسية
@@ -261,7 +263,6 @@ def ask_qwen_unified(data):
         return None
 
 def format_final_report(data, ai_analysis):
-    """تنسيق التقرير النهائي الموحد"""
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
     
     report = f"""
@@ -297,11 +298,11 @@ def format_final_report(data, ai_analysis):
 🤖 <b>التحليل النهائي الموحد (Qwen AI):</b>
 {'='*45}
 
-{ai_analysis if ai_analysis else 'تعذر الحصول على تحليل الذكاء الاصطناعي'}
+{ai_analysis if ai_analysis else '⚠️ تعذر الحصول على تحليل الذكاء الاصطناعي'}
 
 {'='*45}
 💰 <b>مستويات التداول:</b>
-• الاتجاه الفني: {data['direction'].upper()}
+• الاتجاه: {data['direction'].upper()}
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -340,14 +341,14 @@ def handle_command(command):
         sym = parts[1].upper()
         atype = 'crypto' if sym in CRYPTO_LIST else ('stock' if sym in STOCKS_LIST else ('metal' if sym in METALS_LIST else 'forex'))
         
-        send_message(f"🧮 جاري التحليل الشامل الموحد لـ {sym}...")
+        send_message(f" جاري التحليل الشامل الموحد لـ {sym}...")
         
         data = unified_analysis(sym, atype)
         if not data:
             send_message(f"❌ فشل التحليل. تأكد من الرمز.")
             return
         
-        send_message(" جاري دمج التحليل الفني مع الأخبار عبر الذكاء الاصطناعي...")
+        send_message("🤖 جاري دمج التحليل الفني مع الأخبار عبر الذكاء الاصطناعي...")
         
         ai_analysis = ask_qwen_unified(data)
         
@@ -362,6 +363,24 @@ def handle_command(command):
             data = unified_analysis(sym, atype)
             if data:
                 msg += f"• <b>{sym}</b>: ${data['price']:,.2f} | RSI: {data['rsi']:.1f} | النقاط: {data['tech_score']}\n"
+        send_message(msg)
+    
+    elif cmd == '/crypto':
+        send_message("جاري تحليل العملات...")
+        msg = "<b>العملات الرقمية</b>\n\n"
+        for sym in CRYPTO_LIST:
+            data = unified_analysis(sym, 'crypto')
+            if data:
+                msg += f"• <b>{sym}</b>: ${data['price']:,.2f} | RSI: {data['rsi']:.1f}\n"
+        send_message(msg)
+    
+    elif cmd == '/stocks':
+        send_message("جاري تحليل الأسهم...")
+        msg = "<b>الأسهم</b>\n\n"
+        for sym in STOCKS_LIST:
+            data = unified_analysis(sym, 'stock')
+            if data:
+                msg += f"• <b>{sym}</b>: ${data['price']:,.2f} | RSI: {data['rsi']:.1f}\n"
         send_message(msg)
     
     elif cmd == '/help':
@@ -389,7 +408,6 @@ def listen_for_commands():
     except: pass
 
 def scheduled_tasks():
-    schedule.every(6).hours.do(lambda: None)
     schedule.every(10).seconds.do(listen_for_commands)
     logger.info("Tasks scheduled!")
 
