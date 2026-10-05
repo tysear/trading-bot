@@ -154,7 +154,6 @@ def unified_analysis(symbol, asset_type, balance=10000):
         sl_dist = atr * 1.5
         position_size = risk_amount / sl_dist if sl_dist > 0 else 0.0
         
-        # ✅ نظام التصويت لتحديد الاتجاه (Majority Voting)
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -214,7 +213,7 @@ def ask_qwen_unified(data):
     
     prompt = f"""أنت محلل مالي خبير. حلل البيانات التالية وأعطِ نتيجة واحدة موحدة.
 
-📊 البيانات الرياضية لـ {data['symbol']}:
+ البيانات الرياضية لـ {data['symbol']}:
 • السعر: ${data['price']:,.2f}
 • RSI: {data['rsi']:.1f}
 • EMA20: ${data['ema20']:,.2f} | EMA50: ${data['ema50']:,.2f}
@@ -233,7 +232,7 @@ def ask_qwen_unified(data):
 {news_text}
 
 🎯 المطلوب (بالعربية، بشكل منظم):
-1. القرار النهائي الموحد: (شراء قوي 🟢 / شراء 🟢 / انتظار  / بيع 🔴 / بيع قوي 🔴)
+1. القرار النهائي الموحد: (شراء قوي 🟢 / شراء 🟢 / انتظار ⚪ / بيع 🔴 / بيع قوي 🔴🔴)
 2. التفسير: لماذا هذا القرار؟ (ادمج بين الفني والأخبار في تفسير واحد)
 3. حجم الصفقة المقترح: (نسبة من رأس المال)
 4. المخاطر الرئيسية
@@ -266,10 +265,10 @@ def format_final_report(data, ai_analysis):
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
     
     report = f"""
- <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
-💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
+ <b>السعر الحالي:</b> ${data['price']:,.2f}
 
 📊 <b>التحليل الفني والرياضي:</b>
 • RSI: {data['rsi']:.1f} | MACD: {data['macd']:.2f}
@@ -286,7 +285,7 @@ def format_final_report(data, ai_analysis):
 • نسبة النجاح: {data['win_rate']*100:.1f}%
 • الحجم الآمن (Half Kelly): {data['kelly_half']*100:.1f}%
 
- <b>مونت كارلو (30 يوم):</b>
+🎲 <b>مونت كارلو (30 يوم):</b>
 • احتمال الربح: {data['prob_profit']:.1f}%
 • احتمال خسارة 10%+: {data['prob_loss_10']:.1f}%
 • نطاق الثقة 90%: ${data['percentile_5']:,.2f} - ${data['percentile_95']:,.2f}
@@ -313,6 +312,67 @@ def format_final_report(data, ai_analysis):
 """
     return report
 
+def send_market_summary():
+    """إرسال تقرير مختصر للسوق كل 6 ساعات"""
+    try:
+        logger.info("جاري إعداد التقرير الشامل التلقائي...")
+        msg = f"📊 <b>تقرير السوق الشامل التلقائي</b>\n"
+        msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        all_results = []
+        for sym in CRYPTO_LIST:
+            data = unified_analysis(sym, 'crypto')
+            if data: all_results.append(data)
+            time.sleep(0.3)
+        for sym in STOCKS_LIST:
+            data = unified_analysis(sym, 'stock')
+            if data: all_results.append(data)
+            time.sleep(0.3)
+        for sym in METALS_LIST:
+            data = unified_analysis(sym, 'metal')
+            if data: all_results.append(data)
+            time.sleep(0.3)
+        for sym in FOREX_LIST:
+            data = unified_analysis(sym, 'forex')
+            if data: all_results.append(data)
+            time.sleep(0.3)
+        
+        all_results.sort(key=lambda x: x['tech_score'], reverse=True)
+        
+        buys = [r for r in all_results if r['tech_score'] >= 5]
+        if buys:
+            msg += "🟢 <b>فرص شراء قوية:</b>\n"
+            for r in buys[:5]:
+                msg += f"• <b>{r['symbol']}</b>: ${r['price']:,.2f} | RSI: {r['rsi']:.1f} | نقاط: {r['tech_score']}\n"
+            msg += "\n"
+        
+        sells = [r for r in all_results if r['tech_score'] <= -5]
+        if sells:
+            msg += "🔴 <b>فرص بيع قوية:</b>\n"
+            for r in sells[:5]:
+                msg += f"• <b>{r['symbol']}</b>: ${r['price']:,.2f} | RSI: {r['rsi']:.1f} | نقاط: {r['tech_score']}\n"
+            msg += "\n"
+        
+        waits = [r for r in all_results if -5 < r['tech_score'] < 5]
+        if waits:
+            msg += " <b>محايد/انتظار:</b>\n"
+            for r in waits[:7]:
+                msg += f"• {r['symbol']}: ${r['price']:,.2f} | RSI: {r['rsi']:.1f}\n"
+            msg += "\n"
+        
+        msg += "━━━━━━━━━━━━━━━━━━━━\n"
+        msg += "💡 <b>للحصول على تحليل شامل مفصل:</b>\n"
+        msg += "/smart <رمز>\n"
+        msg += "مثال: /smart BTC-USD\n\n"
+        msg += "⚠️ <i>هذا ليس نصيحة مالية.</i>"
+        
+        send_message(msg)
+        logger.info("✅ تم إرسال التقرير التلقائي بنجاح!")
+    except Exception as e:
+        logger.error(f"خطأ في التقرير التلقائي: {e}")
+        send_message(f"⚠️ خطأ في التقرير: {str(e)}")
+
 def send_message(message):
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
@@ -327,10 +387,15 @@ def handle_command(command):
 
 الأوامر:
 /smart <رمز> - تحليل شامل موحد (فني + أخبار + AI)
+/test_report - اختبار التقرير التلقائي يدوياً
 /report - تقرير السوق
 /crypto - العملات
 /stocks - الأسهم
 /help - المساعدة""")
+    
+    elif cmd == '/test_report':
+        send_message("⏳ جاري إعداد التقرير الشامل يدوياً...")
+        send_market_summary()
     
     elif cmd.startswith('/smart'):
         parts = command.split()
@@ -341,14 +406,14 @@ def handle_command(command):
         sym = parts[1].upper()
         atype = 'crypto' if sym in CRYPTO_LIST else ('stock' if sym in STOCKS_LIST else ('metal' if sym in METALS_LIST else 'forex'))
         
-        send_message(f" جاري التحليل الشامل الموحد لـ {sym}...")
+        send_message(f"🧮 جاري التحليل الشامل الموحد لـ {sym}...")
         
         data = unified_analysis(sym, atype)
         if not data:
             send_message(f"❌ فشل التحليل. تأكد من الرمز.")
             return
         
-        send_message("🤖 جاري دمج التحليل الفني مع الأخبار عبر الذكاء الاصطناعي...")
+        send_message(" جاري دمج التحليل الفني مع الأخبار عبر الذكاء الاصطناعي...")
         
         ai_analysis = ask_qwen_unified(data)
         
@@ -357,13 +422,7 @@ def handle_command(command):
     
     elif cmd == '/report':
         send_message("جاري إعداد التقرير...")
-        msg = f"<b>تقرير الأسواق</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-        for sym in CRYPTO_LIST[:3] + STOCKS_LIST[:3]:
-            atype = 'crypto' if sym in CRYPTO_LIST else 'stock'
-            data = unified_analysis(sym, atype)
-            if data:
-                msg += f"• <b>{sym}</b>: ${data['price']:,.2f} | RSI: {data['rsi']:.1f} | النقاط: {data['tech_score']}\n"
-        send_message(msg)
+        send_market_summary()
     
     elif cmd == '/crypto':
         send_message("جاري تحليل العملات...")
@@ -386,6 +445,7 @@ def handle_command(command):
     elif cmd == '/help':
         send_message("""<b>الأوامر:</b>
 /smart <رمز> - تحليل شامل موحد
+/test_report - اختبار التقرير التلقائي
 /report - تقرير السوق
 /crypto - العملات
 /stocks - الأسهم
@@ -408,8 +468,9 @@ def listen_for_commands():
     except: pass
 
 def scheduled_tasks():
+    schedule.every(6).hours.do(send_market_summary)
     schedule.every(10).seconds.do(listen_for_commands)
-    logger.info("Tasks scheduled!")
+    logger.info("✅ تم جدولة جميع المهام!")
 
 if __name__ == "__main__":
     logger.info("Starting Unified Trading Bot...")
