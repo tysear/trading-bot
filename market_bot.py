@@ -13,10 +13,7 @@ from scipy.stats import linregress
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('bot.log', encoding='utf-8'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -29,21 +26,16 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 LAST_UPDATE_ID = 0
-
 CRYPTO_LIST = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'BNB-USD', 'ADA-USD', 'DOGE-USD']
 STOCKS_LIST = ['AAPL', 'TSLA', 'NVDA', 'AMZN', 'MSFT', 'GOOGL', 'META']
 METALS_LIST = ['GC=F', 'SI=F']
 FOREX_LIST = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X']
 
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Bot is running!"
-
+def home(): return "Bot is running perfectly!"
 @app.route('/health')
-def health():
-    return {"status": "ok"}
+def health(): return {"status": "ok"}
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -51,16 +43,11 @@ def run_flask():
 
 def fetch_crypto(symbol):
     try:
-        logger.info(f"Fetching {symbol} from yfinance...")
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="3mo")
-        if hist.empty:
-            return None
-        closes = hist['Close'].tolist()
-        highs = hist['High'].tolist()
-        lows = hist['Low'].tolist()
-        logger.info(f"Got {len(closes)} days for {symbol}")
-        return {'closes': closes, 'highs': highs, 'lows': lows}
+        if hist.empty: return None
+        return {'closes': hist['Close'].tolist(), 'highs': hist['High'].tolist(), 
+                'lows': hist['Low'].tolist(), 'volumes': hist['Volume'].tolist()}
     except Exception as e:
         logger.error(f"Error fetching {symbol}: {e}")
         return None
@@ -69,243 +56,163 @@ def fetch_stock(symbol):
     try:
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="3mo")
-        if hist.empty:
-            return None
-        closes = hist['Close'].tolist()
-        highs = hist['High'].tolist()
-        lows = hist['Low'].tolist()
-        return {'closes': closes, 'highs': highs, 'lows': lows}
+        if hist.empty: return None
+        return {'closes': hist['Close'].tolist(), 'highs': hist['High'].tolist(), 
+                'lows': hist['Low'].tolist(), 'volumes': hist['Volume'].tolist()}
     except Exception as e:
         logger.error(f"Error fetching {symbol}: {e}")
         return None
 
+def fetch_news(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news
+        if not news or len(news) == 0:
+            return ["لا توجد أخبار حديثة متاحة."]
+        news_list = []
+        for item in news[:3]:
+            title = item.get('title', 'بدون عنوان')
+            publisher = item.get('publisher', 'مجهول')
+            news_list.append(f"• {title} ({publisher})")
+        return news_list
+    except Exception as e:
+        logger.error(f"Error fetching news for {symbol}: {e}")
+        return ["تعذر جلب الأخبار."]
+
 def calc_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return 50
+    if len(prices) < period + 1: return 50
     gains, losses = [], []
     for i in range(-period, 0):
         change = prices[i] - prices[i-1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+        gains.append(max(change, 0)); losses.append(max(-change, 0))
+    avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
+    if avg_loss == 0: return 100
+    return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 def calc_ema(prices, period):
-    if len(prices) < period:
-        return prices[-1]
+    if len(prices) < period: return prices[-1]
     multiplier = 2 / (period + 1)
     ema = sum(prices[:period]) / period
-    for price in prices[period:]:
-        ema = (price - ema) * multiplier + ema
+    for price in prices[period:]: ema = (price - ema) * multiplier + ema
     return ema
 
-def calc_macd(prices):
-    ema12 = calc_ema(prices, 12)
-    ema26 = calc_ema(prices, 26)
-    return ema12 - ema26
+def calc_macd(prices): return calc_ema(prices, 12) - calc_ema(prices, 26)
 
 def calc_bollinger(prices, period=20):
-    if len(prices) < period:
-        return prices[-1], prices[-1]
+    if len(prices) < period: return prices[-1], prices[-1]
     recent = prices[-period:]
     sma = sum(recent) / period
     std = (sum((p - sma) ** 2 for p in recent) / period) ** 0.5
     return sma + (std * 2), sma - (std * 2)
 
 def calc_atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
-        return closes[-1] * 0.02
-    true_ranges = []
-    for i in range(-period, 0):
-        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-        true_ranges.append(tr)
+    if len(closes) < period + 1: return closes[-1] * 0.02
+    true_ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) for i in range(-period, 0)]
     return sum(true_ranges) / period
 
 def analyze_asset(symbol, asset_type):
-    if asset_type == 'crypto':
-        data = fetch_crypto(symbol)
-    else:
-        data = fetch_stock(symbol)
-    if not data:
-        return None
-    closes = data['closes']
-    highs = data['highs']
-    lows = data['lows']
-    price = closes[-1]
-    prev_price = closes[-2]
-    rsi = calc_rsi(closes)
-    ema20 = calc_ema(closes, 20)
-    ema50 = calc_ema(closes, 50)
-    macd = calc_macd(closes)
-    bb_upper, bb_lower = calc_bollinger(closes)
-    atr = calc_atr(highs, lows, closes)
-    p1 = price - prev_price
-    p2 = p1 - (prev_price - closes[-3])
-    score = 0
-    signals = []
-    if rsi < 30:
-        score += 2
-        signals.append(f"RSI={rsi:.1f} oversold")
-    elif rsi > 70:
-        score -= 2
-        signals.append(f"RSI={rsi:.1f} overbought")
-    else:
-        signals.append(f"RSI={rsi:.1f} neutral")
-    if price > ema20 > ema50:
-        score += 2
-        signals.append("Price above EMA20 and EMA50")
-    elif price < ema20 < ema50:
-        score -= 2
-        signals.append("Price below EMA20 and EMA50")
-    else:
-        signals.append("EMA neutral")
-    if macd > 0:
-        score += 1
-        signals.append("MACD positive")
-    else:
-        score -= 1
-        signals.append("MACD negative")
-    if price <= bb_lower:
-        score += 2
-        signals.append("At lower BB")
-    elif price >= bb_upper:
-        score -= 2
-        signals.append("At upper BB")
-    if p1 > 0 and p2 > 0:
-        score += 1
-        signals.append("Upward momentum")
-    elif p1 < 0 and p2 < 0:
-        score -= 1
-        signals.append("Downward momentum")
-    if score >= 5:
-        rec = "Strong Buy"
-        direction = 'buy'
-    elif score >= 3:
-        rec = "Buy"
-        direction = 'buy'
-    elif score <= -5:
-        rec = "Strong Sell"
-        direction = 'sell'
-    elif score <= -3:
-        rec = "Sell"
-        direction = 'sell'
-    else:
-        rec = "Wait"
-        direction = None
+    data = fetch_crypto(symbol) if asset_type == 'crypto' else fetch_stock(symbol)
+    if not data: return None
+    closes, highs, lows = data['closes'], data['highs'], data['lows']
+    price, prev_price = closes[-1], closes[-2]
+    rsi, ema20, ema50 = calc_rsi(closes), calc_ema(closes, 20), calc_ema(closes, 50)
+    macd, atr = calc_macd(closes), calc_atr(highs, lows, closes)
+    
+    score, signals = 0, []
+    if rsi < 30: score += 2; signals.append("RSI تشبع بيعي")
+    elif rsi > 70: score -= 2; signals.append("RSI تشبع شرائي")
+    
+    if price > ema20 > ema50: score += 2; signals.append("سعر فوق EMA")
+    elif price < ema20 < ema50: score -= 2; signals.append("سعر تحت EMA")
+    
+    if macd > 0: score += 1; signals.append("MACD إيجابي")
+    else: score -= 1; signals.append("MACD سلبي")
+    
+    direction = 'buy' if score >= 2 else ('sell' if score <= -2 else None)
     if direction == 'buy':
-        sl = price - (atr * 1.5)
-        tp1 = price + (atr * 2)
-        tp2 = price + (atr * 3)
-        tp3 = price + (atr * 4.5)
+        sl, tp1, tp2, tp3 = price - (atr*1.5), price + (atr*2), price + (atr*3), price + (atr*4.5)
     elif direction == 'sell':
-        sl = price + (atr * 1.5)
-        tp1 = price - (atr * 2)
-        tp2 = price - (atr * 3)
-        tp3 = price - (atr * 4.5)
+        sl, tp1, tp2, tp3 = price + (atr*1.5), price - (atr*2), price - (atr*3), price - (atr*4.5)
     else:
-        sl = price - (atr * 1.5)
-        tp1 = price + (atr * 2)
-        tp2 = price + (atr * 3)
-        tp3 = price + (atr * 4.5)
-    risk = abs(price - sl)
-    reward = abs(tp2 - price)
-    rr_ratio = reward / risk if risk > 0 else 0
-    return {
-        'symbol': symbol, 'type': asset_type, 'price': price, 'rsi': rsi,
-        'ema20': ema20, 'score': score, 'recommendation': rec,
-        'direction': direction, 'signals': signals,
-        'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr_ratio': rr_ratio
-    }
+        sl, tp1, tp2, tp3 = price - (atr*1.5), price + (atr*2), price + (atr*3), price + (atr*4.5)
+        
+    rr = abs(tp2 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
+    rec = "Strong Buy" if score >= 5 else ("Buy" if score >= 3 else ("Strong Sell" if score <= -5 else ("Sell" if score <= -3 else "Wait")))
+    
+    return {'symbol': symbol, 'type': asset_type, 'price': price, 'rsi': rsi, 'ema20': ema20, 
+            'score': score, 'recommendation': rec, 'direction': direction, 'sl': sl, 
+            'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr_ratio': rr}
 
 def unified_analysis(symbol, asset_type, balance=10000):
     try:
-        if asset_type == 'crypto':
-            data = fetch_crypto(symbol)
-        else:
-            data = fetch_stock(symbol)
-        if not data or len(data['closes']) < 50:
-            return None
+        data = fetch_crypto(symbol) if asset_type == 'crypto' else fetch_stock(symbol)
+        if not data or len(data['closes']) < 50: return None
+        
         closes = np.array(data['closes'], dtype=float)
-        highs = np.array(data['highs'], dtype=float)
-        lows = np.array(data['lows'], dtype=float)
+        highs, lows = np.array(data['highs'], dtype=float), np.array(data['lows'], dtype=float)
+        volumes = data.get('volumes', [])
+        news = fetch_news(symbol)
         current_price = float(closes[-1])
-        rsi = calc_rsi(closes)
-        ema20 = calc_ema(closes, 20)
-        ema50 = calc_ema(closes, 50)
-        macd = calc_macd(closes)
-        atr = calc_atr(highs, lows, closes)
+        
+        rsi, ema20, ema50 = calc_rsi(closes), calc_ema(closes, 20), calc_ema(closes, 50)
+        macd, atr = calc_macd(closes), calc_atr(highs, lows, closes)
+        
+        # Ornstein-Uhlenbeck
         returns = np.diff(np.log(closes))
         lookback = min(50, len(closes) - 1)
-        spread_lag = closes[-lookback-1:-1]
-        spread_diff = np.diff(closes[-lookback-1:])
-        if len(spread_lag) < 10:
-            ou_theta = 0.01
-            ou_mu = current_price
-            ou_z_score = 0.0
-            ou_half_life = 999.0
-        else:
-            slope, intercept, r_value, p_value, std_err = linregress(spread_lag, spread_diff)
-            ou_theta = float(-slope) if slope < 0 else 0.01
-            ou_mu = float(np.mean(closes[-lookback:]))
-            ou_sigma = float(np.std(returns[-lookback:])) * np.sqrt(252)
-            ou_half_life = float(np.log(2) / ou_theta) if ou_theta > 0 else 999.0
-            ou_z_score = float((current_price - ou_mu) / (ou_sigma * current_price)) if ou_sigma > 0 else 0.0
-        wins = 0
-        total = 0
-        lookback_kelly = min(50, len(closes) - 5)
-        for i in range(-lookback_kelly, -5):
-            if closes[i+5] > closes[i]:
-                wins += 1
-            total += 1
+        slope, intercept, r_val, p_val, std_err = linregress(closes[-lookback-1:-1], np.diff(closes[-lookback-1:]))
+        ou_theta = float(-slope) if slope < 0 else 0.01
+        ou_mu = float(np.mean(closes[-lookback:]))
+        ou_sigma = float(np.std(returns[-lookback:])) * np.sqrt(252)
+        ou_half_life = float(np.log(2) / ou_theta) if ou_theta > 0 else 999.0
+        ou_z_score = float((current_price - ou_mu) / (ou_sigma * current_price)) if ou_sigma > 0 else 0.0
+        
+        # Kelly Criterion
+        wins = sum(1 for i in range(-min(50, len(closes)-5), -5) if closes[i+5] > closes[i])
+        total = min(50, len(closes) - 5)
         win_rate = float(wins / total) if total > 0 else 0.5
         win_loss_ratio = 2.0 if current_price > ema20 else 1.5
         kelly_edge = float((win_rate * win_loss_ratio) - (1 - win_rate))
         kelly_full = float(kelly_edge / win_loss_ratio) if win_loss_ratio > 0 else 0.0
         kelly_half = min(float(kelly_full / 2), 0.25)
-        kelly_quarter = float(kelly_full / 4)
-        mu_return = float(np.mean(returns))
-        sigma_return = float(np.std(returns))
+        
+        # Monte Carlo (Exact GBM / Milstein-level accuracy)
+        mu_daily, sigma_daily = float(np.mean(returns)), float(np.std(returns))
         np.random.seed(42)
-        simulations = 1000
-        days = 30
-        simulated = np.zeros((simulations, days + 1))
+        simulated = np.zeros((1000, 31))
         simulated[:, 0] = current_price
-        for t in range(1, days + 1):
-            random_returns = np.random.normal(mu_return, sigma_return, simulations)
-            simulated[:, t] = simulated[:, t-1] * np.exp(random_returns)
+        for t in range(1, 31):
+            Z = np.random.normal(0, 1, 1000)
+            simulated[:, t] = simulated[:, t-1] * np.exp(mu_daily + sigma_daily * Z)
+        
         final_prices = simulated[:, -1]
-        prob_profit = float(np.sum(final_prices > current_price) / simulations * 100)
-        prob_loss_10 = float(np.sum(final_prices < current_price * 0.9) / simulations * 100)
-        prob_gain_10 = float(np.sum(final_prices > current_price * 1.1) / simulations * 100)
-        percentile_5 = float(np.percentile(final_prices, 5))
-        percentile_95 = float(np.percentile(final_prices, 95))
-        vol_current = float(np.std(returns[-20:])) * np.sqrt(252) if len(returns) >= 20 else float(np.std(returns)) * np.sqrt(252)
-        vol_long_term = float(np.std(returns)) * np.sqrt(252)
+        prob_profit = float(np.sum(final_prices > current_price) / 1000 * 100)
+        prob_loss_10 = float(np.sum(final_prices < current_price * 0.9) / 1000 * 100)
+        percentile_5, percentile_95 = float(np.percentile(final_prices, 5)), float(np.percentile(final_prices, 95))
+        
+        # Volume Analysis
+        vol_msg = "محايد"
+        if len(volumes) >= 20:
+            recent_vol, avg_vol = np.mean(volumes[-5:]), np.mean(volumes[-20:])
+            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع (تأكيد الاتجاه) 📈"
+            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض (ضعف الاتجاه) 📉"
+        
+        # Risk & Position Sizing
         risk_amount = balance * kelly_half
-        sl_distance = atr * 1.5
-        position_size = risk_amount / sl_distance if sl_distance > 0 else 0.0
-        notional_value = position_size * current_price
+        sl_dist = atr * 1.5
+        position_size = risk_amount / sl_dist if sl_dist > 0 else 0.0
+        
         direction = 'buy' if current_price > ema20 and rsi < 70 else 'sell'
         if direction == 'buy':
-            sl = current_price - (atr * 1.5)
-            tp1 = current_price + (atr * 2)
-            tp2 = current_price + (atr * 3)
-            tp3 = current_price + (atr * 4.5)
+            sl, tp1, tp2, tp3 = current_price - (atr*1.5), current_price + (atr*2), current_price + (atr*3), current_price + (atr*4.5)
         else:
-            sl = current_price + (atr * 1.5)
-            tp1 = current_price - (atr * 2)
-            tp2 = current_price - (atr * 3)
-            tp3 = current_price - (atr * 4.5)
-        risk_reward = float(abs(tp2 - current_price) / abs(current_price - sl)) if abs(current_price - sl) > 0 else 0.0
+            sl, tp1, tp2, tp3 = current_price + (atr*1.5), current_price - (atr*2), current_price - (atr*3), current_price - (atr*4.5)
+        rr = float(abs(tp2 - current_price) / abs(current_price - sl)) if abs(current_price - sl) > 0 else 0.0
+        
+        # Scoring
         score = 0
         if rsi < 30: score += 3
-        elif rsi < 40: score += 2
         elif rsi > 70: score -= 3
-        elif rsi > 60: score -= 1
         if current_price > ema20 > ema50: score += 3
         elif current_price < ema20 < ema50: score -= 3
         if macd > 0: score += 2
@@ -316,408 +223,160 @@ def unified_analysis(symbol, asset_type, balance=10000):
         elif prob_profit < 40: score -= 2
         if kelly_edge > 0.1: score += 2
         elif kelly_edge < 0: score -= 3
-        if score >= 8:
-            recommendation = "Strong Buy"
-            confidence = "Very High"
-        elif score >= 5:
-            recommendation = "Buy"
-            confidence = "High"
-        elif score >= 2:
-            recommendation = "Cautious Buy"
-            confidence = "Medium"
-        elif score <= -8:
-            recommendation = "Strong Sell"
-            confidence = "Very High"
-        elif score <= -5:
-            recommendation = "Sell"
-            confidence = "High"
-        elif score <= -2:
-            recommendation = "Cautious Sell"
-            confidence = "Medium"
-        else:
-            recommendation = "Wait"
-            confidence = "Low"
+        
+        if score >= 8: rec, conf = "Strong Buy 🟢", "Very High"
+        elif score >= 5: rec, conf = "Buy 🟢", "High"
+        elif score >= 2: rec, conf = "Cautious Buy 🟡", "Medium"
+        elif score <= -8: rec, conf = "Strong Sell 🔴", "Very High"
+        elif score <= -5: rec, conf = "Sell 🔴", "High"
+        elif score <= -2: rec, conf = "Cautious Sell 🟡", "Medium"
+        else: rec, conf = "Wait ⚪", "Low"
+        
         return {
-            'symbol': symbol, 'type': asset_type, 'price': current_price,
-            'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
-            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
-            'risk_reward': risk_reward, 'ou_theta': ou_theta, 'ou_mu': ou_mu,
-            'ou_z_score': ou_z_score, 'ou_half_life': ou_half_life,
-            'win_rate': win_rate, 'kelly_edge': kelly_edge, 'kelly_full': kelly_full,
-            'kelly_half': kelly_half, 'kelly_quarter': kelly_quarter,
-            'position_size': position_size, 'notional_value': notional_value,
-            'risk_amount': risk_amount, 'prob_profit': prob_profit,
-            'prob_loss_10': prob_loss_10, 'prob_gain_10': prob_gain_10,
-            'percentile_5': percentile_5, 'percentile_95': percentile_95,
-            'vol_current': vol_current, 'vol_long_term': vol_long_term,
-            'score': score, 'recommendation': recommendation, 'confidence': confidence
+            'symbol': symbol, 'type': asset_type, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 
+            'ema50': ema50, 'macd': macd, 'atr': atr, 'direction': direction, 'sl': sl, 'tp1': tp1, 
+            'tp2': tp2, 'tp3': tp3, 'risk_reward': rr, 'ou_theta': ou_theta, 'ou_mu': ou_mu, 
+            'ou_z_score': ou_z_score, 'ou_half_life': ou_half_life, 'win_rate': win_rate, 
+            'kelly_edge': kelly_edge, 'kelly_half': kelly_half, 'prob_profit': prob_profit, 
+            'prob_loss_10': prob_loss_10, 'percentile_5': percentile_5, 'percentile_95': percentile_95,
+            'vol_msg': vol_msg, 'position_size': position_size, 'risk_amount': risk_amount,
+            'score': score, 'recommendation': rec, 'confidence': conf, 'news': news
         }
     except Exception as e:
-        logger.error(f"Error in unified_analysis for {symbol}: {e}")
+        logger.error(f"Error in unified_analysis: {e}")
         return None
 
-def format_unified_analysis(result):
-    msg = f"""
-Analysis for {result['symbol']}
+def format_unified_analysis(r):
+    news_text = "\n".join(r.get('news', ['لا توجد أخبار']))
+    return f"""
+📊 <b>تحليل شامل متقدم لـ {r['symbol']}</b>
 {'='*40}
+💰 السعر: ${r['price']:,.2f} | RSI: {r['rsi']:.1f} | MACD: {r['macd']:.2f}
+📈 حجم التداول: {r['vol_msg']}
 
-Current Price: ${result['price']:,.2f}
+📰 <b>آخر الأخبار المؤثرة:</b>
+{news_text}
 
-Technical Analysis:
-- RSI: {result['rsi']:.1f}
-- EMA20: ${result['ema20']:,.2f}
-- EMA50: ${result['ema50']:,.2f}
-- MACD: {result['macd']:.4f}
-- ATR: ${result['atr']:.2f}
+🧮 <b>نموذج OU (العودة للمتوسط):</b>
+• المتوسط: ${r['ou_mu']:,.2f} | Z-Score: {r['ou_z_score']:.2f}
+• عمر النصف: {r['ou_half_life']:.1f} يوم
 
-Ornstein-Uhlenbeck Model:
-- Long-term mean: ${result['ou_mu']:,.2f}
-- Mean reversion speed (theta): {result['ou_theta']:.4f}
-- Half-life: {result['ou_half_life']:.1f} days
-- Z-Score: {result['ou_z_score']:.2f}
+🎲 <b>Kelly Criterion (إدارة رأس المال):</b>
+• نسبة النجاح: {r['win_rate']*100:.1f}% | Edge: {r['kelly_edge']*100:.2f}%
+• الحجم الآمن (Half Kelly): {r['kelly_half']*100:.2f}% 
 
-Kelly Criterion:
-- Win rate: {result['win_rate']*100:.1f}%
-- Edge: {result['kelly_edge']*100:.2f}%
-- Safe Kelly (Half): {result['kelly_half']*100:.2f}%
-
-Monte Carlo (30 days):
-- Profit probability: {result['prob_profit']:.1f}%
-- 10%+ loss probability: {result['prob_loss_10']:.1f}%
-- 90% confidence range: ${result['percentile_5']:,.2f} - ${result['percentile_95']:,.2f}
-
-Heston Volatility:
-- Current vol: {result['vol_current']*100:.2f}%
-- Long-term vol: {result['vol_long_term']*100:.2f}%
+🎲 <b>مونت كارلو (دقة Exact GBM/Milstein):</b>
+• احتمال الربح: {r['prob_profit']:.1f}% | احتمال خسارة 10%+: {r['prob_loss_10']:.1f}%
+• نطاق الثقة 90%: ${r['percentile_5']:,.2f} - ${r['percentile_95']:,.2f}
 
 {'='*40}
-{result['recommendation']}
-Confidence: {result['confidence']} | Score: {result['score']}
+🎯 <b>{r['recommendation']}</b> (الثقة: {r['confidence']} | النقاط: {r['score']})
 
-Trade Details (Half Kelly):
-- Direction: {result['direction'].upper()}
-- Position size: {result['position_size']:.4f} units
-- Value: ${result['notional_value']:,.2f}
-- Risk amount: ${result['risk_amount']:,.2f}
+💰 <b>تفاصيل الصفقة:</b>
+• الاتجاه: {r['direction'].upper()}
+• حجم الوحدة: {r['position_size']:.4f} | المخاطرة: ${r['risk_amount']:,.2f}
+• وقف الخسارة (SL): ${r['sl']:,.2f}
+• الأهداف: TP1: ${r['tp1']:,.2f} | TP2: ${r['tp2']:,.2f} | TP3: ${r['tp3']:,.2f}
+• المخاطرة/العائد: 1:{r['risk_reward']:.2f}
 
-Risk Management:
-- SL: ${result['sl']:,.2f}
-- TP1: ${result['tp1']:,.2f}
-- TP2: ${result['tp2']:,.2f}
-- TP3: ${result['tp3']:,.2f}
-- Risk:Reward = 1:{result['risk_reward']:.2f}
-
-Not financial advice.
+⚠️ <i>هذا ليس نصيحة مالية. تداول بمسؤوليتك.</i>
 """
-    return msg
 
 def send_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json().get("ok", False)
-    except Exception as e:
-        logger.error(f"Error sending: {e}")
-        return False
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
+                      json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e: logger.error(f"Send error: {e}")
 
 def format_signal(r):
-    msg = f"<b>{r['symbol']}</b> ({r['type']})\n"
-    msg += f"Price: ${r['price']:.2f}\n"
-    msg += f"RSI: {r['rsi']:.1f}\n"
-    msg += f"Signal: {r['recommendation']}\n"
-    msg += f"Score: {r['score']}\n\n"
-    if r['direction']:
-        msg += f"SL: ${r['sl']:.2f}\n"
-        msg += f"TP1: ${r['tp1']:.2f}\n"
-        msg += f"TP2: ${r['tp2']:.2f}\n"
-        msg += f"TP3: ${r['tp3']:.2f}\n"
-        msg += f"R:R = 1:{r['rr_ratio']:.1f}\n\n"
-    msg += "━━━━━━━━━━━━\n\n"
-    return msg
+    return f"<b>{r['symbol']}</b> ({r['type']})\nالسعر: ${r['price']:.2f} | RSI: {r['rsi']:.1f}\nالإشارة: {r['recommendation']} (Score: {r['score']})\nSL: ${r['sl']:.2f} | TP2: ${r['tp2']:.2f}\n━━━━━━━━━━━━\n"
 
 def analyze_all():
-    message = f"<b>Market Report</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-    all_results = []
-    for symbol in CRYPTO_LIST:
-        result = analyze_asset(symbol, 'crypto')
-        if result: all_results.append(result)
-        time.sleep(0.5)
-    for symbol in STOCKS_LIST:
-        result = analyze_asset(symbol, 'stock')
-        if result: all_results.append(result)
-        time.sleep(0.5)
-    for symbol in METALS_LIST:
-        result = analyze_asset(symbol, 'metal')
-        if result: all_results.append(result)
-        time.sleep(0.5)
-    for symbol in FOREX_LIST:
-        result = analyze_asset(symbol, 'forex')
-        if result: all_results.append(result)
-        time.sleep(0.5)
-    all_results.sort(key=lambda x: x['score'], reverse=True)
-    buys = [r for r in all_results if r['score'] >= 3]
-    if buys:
-        message += "<b>Buy Opportunities:</b>\n\n"
-        for r in buys[:5]: message += format_signal(r)
-    sells = [r for r in all_results if r['score'] <= -3]
-    if sells:
-        message += "\n<b>Sell Opportunities:</b>\n\n"
-        for r in sells[:5]: message += format_signal(r)
-    waits = [r for r in all_results if -3 < r['score'] < 3]
-    if waits:
-        message += "\n<b>Wait:</b>\n\n"
-        for r in waits[:7]:
-            message += f"• {r['symbol']} - ${r['price']:.2f} | RSI: {r['rsi']:.1f}\n\n"
-    send_message(message)
-    logger.info("Report sent!")
-
-def ask_groq(question, context=""):
-    if not GROQ_API_KEY:
-        return "Groq not configured"
-    try:
-        prompt = f"Answer in Arabic clearly.\n\n{context}\n\nQuestion: {question}\n\nNote: This is not financial advice."
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": 1024}
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
-        data = response.json()
-        if 'choices' in data and len(data['choices']) > 0:
-            return data['choices'][0]['message']['content']
-        return f"Error: {data.get('error', {}).get('message', 'Unknown')}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    msg = f"<b>تقرير الأسواق الشامل</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+    results = []
+    for sym in CRYPTO_LIST + STOCKS_LIST + METALS_LIST + FOREX_LIST:
+        atype = 'crypto' if sym in CRYPTO_LIST else ('stock' if sym in STOCKS_LIST else ('metal' if sym in METALS_LIST else 'forex'))
+        res = analyze_asset(sym, atype)
+        if res: results.append(res)
+        time.sleep(0.3)
+    
+    results.sort(key=lambda x: x['score'], reverse=True)
+    for r in results[:5]: 
+        if r['score'] >= 3: msg += f"🟢 {format_signal(r)}"
+    for r in results[-5:]: 
+        if r['score'] <= -3: msg += f"🔴 {format_signal(r)}"
+    send_message(msg)
 
 def ask_qwen(question, context=""):
-    if not OPENROUTER_API_KEY:
-        return "OpenRouter not configured"
+    if not OPENROUTER_API_KEY: return "OpenRouter غير مفعّل"
     try:
-        prompt = f"Answer in Arabic in detail.\n\n{context}\n\nQuestion: {question}\n\nNote: This is not financial advice."
-        headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/tysear/trading-bot", "X-Title": "Trading Bot"}
-        payload = {"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 2048}
-        response = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=60)
-        data = response.json()
-        if 'choices' in data and len(data['choices']) > 0:
-            return data['choices'][0]['message']['content']
-        return f"Error: {data.get('error', {}).get('message', 'Unknown')}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-def ask_ai(question, context="", model_preference="auto"):
-    if model_preference == "auto":
-        model = "groq" if len(question) < 100 else "qwen"
-    else:
-        model = model_preference
-    if model == "qwen":
-        try:
-            answer = ask_qwen(question, context)
-            if not answer.startswith("Error"):
-                return answer
-        except: pass
-    try:
-        answer = ask_groq(question, context)
-        if not answer.startswith("Error"):
-            return answer
-    except: pass
-    return "Sorry, could not get answer."
+        headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/tysear/trading-bot"}
+        payload = {"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": f"أجب بالعربية باختصار واحترافية.\n\n{context}\n\nالسؤال: {question}\n\n⚠️ هذا ليس نصيحة مالية."}], "temperature": 0.3, "max_tokens": 1024}
+        res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=30).json()
+        return res['choices'][0]['message']['content'] if 'choices' in res else "Error"
+    except: return "Error"
 
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message("""<b>Smart Trading Bot</b>
-
-Commands:
-/report - Full report
-/crypto - Crypto only
-/stocks - Stocks only
-/metals - Metals
-/forex - Forex
-/urgent - Urgent alerts
-
-AI:
-/ask <question> - Auto AI
-/qwen <question> - Qwen 2.5 72B
-/ai <model> <question>
-
-Advanced:
-/smart <symbol> - Full analysis
-
-/help - Help""")
+        send_message("<b>بوت التداول الذكي المتقدم (النسخة النهائية)</b>\n\nالأوامر:\n/report - تقرير شامل\n/crypto - عملات\n/stocks - أسهم\n/smart <رمز> - تحليل متقدم شامل مع الأخبار\n/help - المساعدة")
     elif cmd == '/report':
-        send_message("Generating report...")
-        analyze_all()
+        send_message("جاري إعداد التقرير..."); analyze_all()
     elif cmd == '/crypto':
-        send_message("Analyzing crypto...")
-        message = "<b>Crypto Report</b>\n\n"
-        for symbol in CRYPTO_LIST:
-            result = analyze_asset(symbol, 'crypto')
-            if result: message += format_signal(result)
-        send_message(message)
+        send_message("جاري التحليل..."); msg = "<b>العملات الرقمية</b>\n\n"
+        for sym in CRYPTO_LIST:
+            r = analyze_asset(sym, 'crypto')
+            if r: msg += format_signal(r)
+        send_message(msg)
     elif cmd == '/stocks':
-        send_message("Analyzing stocks...")
-        message = "<b>Stocks Report</b>\n\n"
-        for symbol in STOCKS_LIST:
-            result = analyze_asset(symbol, 'stock')
-            if result: message += format_signal(result)
-        send_message(message)
-    elif cmd == '/metals':
-        send_message("Analyzing metals...")
-        message = "<b>Metals Report</b>\n\n"
-        for symbol in METALS_LIST:
-            result = analyze_asset(symbol, 'metal')
-            if result: message += format_signal(result)
-        send_message(message)
-    elif cmd == '/forex':
-        send_message("Analyzing forex...")
-        message = "<b>Forex Report</b>\n\n"
-        for symbol in FOREX_LIST:
-            result = analyze_asset(symbol, 'forex')
-            if result: message += format_signal(result)
-        send_message(message)
-    elif cmd == '/urgent':
-        send_message("Checking alerts...")
-        for symbol in CRYPTO_LIST[:3]:
-            result = analyze_asset(symbol, 'crypto')
-            if result and result['rsi'] < 25:
-                send_message(f"<b>{result['symbol']}</b>\nRSI = {result['rsi']:.1f}\nStrong buy signal!")
-            elif result and result['rsi'] > 75:
-                send_message(f"<b>{result['symbol']}</b>\nRSI = {result['rsi']:.1f}\nStrong sell signal!")
-        send_message("Check complete!")
-    elif cmd.startswith('/ask '):
-        question = command[5:].strip()
-        if not question:
-            send_message("Please write a question after /ask")
-            return
-        send_message("Thinking...")
-        answer = ask_ai(question)
-        send_message(f"<b>Answer:</b>\n\n{answer}")
-    elif cmd.startswith('/qwen '):
-        question = command[6:].strip()
-        if not question:
-            send_message("Please write a question after /qwen")
-            return
-        send_message("Thinking with Qwen...")
-        answer = ask_qwen(question)
-        send_message(f"<b>Qwen 2.5 72B:</b>\n\n{answer}")
-    elif cmd.startswith('/ai '):
-        parts = command.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message("Usage: /ai groq|qwen <question>")
-            return
-        model = parts[1].lower()
-        question = parts[2]
-        send_message(f"Thinking with {model.upper()}...")
-        answer = ask_ai(question, model_preference=model)
-        send_message(f"<b>{model.upper()}:</b>\n\n{answer}")
+        send_message("جاري التحليل..."); msg = "<b>الأسهم الأمريكية</b>\n\n"
+        for sym in STOCKS_LIST:
+            r = analyze_asset(sym, 'stock')
+            if r: msg += format_signal(r)
+        send_message(msg)
     elif cmd.startswith('/smart'):
         parts = command.split()
         if len(parts) < 2:
-            send_message("""<b>Smart Analysis:</b>
-
-/smart <symbol>
-
-Examples:
-/smart BTC-USD
-/smart AAPL
-/smart GC=F""")
+            send_message("<b>الاستخدام:</b>\n/smart <رمز>\nمثال: /smart BTC-USD\n/smart AAPL")
             return
-        symbol = parts[1].upper()
-        if symbol in CRYPTO_LIST:
-            asset_type = 'crypto'
-        elif symbol in STOCKS_LIST:
-            asset_type = 'stock'
-        elif symbol in METALS_LIST:
-            asset_type = 'metal'
-        elif symbol in FOREX_LIST:
-            asset_type = 'forex'
-        else:
-            asset_type = 'stock'
-        send_message(f"Analyzing {symbol}...")
-        result = unified_analysis(symbol, asset_type)
-        if not result:
-            send_message(f"Failed to analyze {symbol}\n\nPossible reasons:\n- Not enough data\n- API connection error\n- Invalid symbol\n\nTry: /smart BTC-USD or /smart AAPL")
+        sym = parts[1].upper()
+        atype = 'crypto' if sym in CRYPTO_LIST else ('stock' if sym in STOCKS_LIST else ('metal' if sym in METALS_LIST else 'forex'))
+        send_message(f"🧮 جاري التحليل المتقدم لـ {sym} (مع الأخبار)...")
+        res = unified_analysis(sym, atype)
+        if not res:
+            send_message(f"فشل التحليل. تأكد من الرمز (جرب {sym.replace('-USD', 'USDT') if 'USD' in sym else sym}-USD)")
             return
-        msg = format_unified_analysis(result)
-        send_message(msg)
-        send_message("Getting AI analysis...")
-        context = f"""Data for {result['symbol']}:
-- Price: ${result['price']:,.2f}
-- RSI: {result['rsi']:.1f}
-- OU Z-Score: {result['ou_z_score']:.2f}
-- Kelly Half: {result['kelly_half']*100:.2f}%
-- Profit probability: {result['prob_profit']:.1f}%
-- Volatility: {result['vol_current']*100:.2f}%
-- Recommendation: {result['recommendation']}
-- Score: {result['score']}"""
-        question = f"Based on these equations:\n1. Is this trade recommended?\n2. What are the main risks?\n3. What is your final advice?"
-        ai_answer = ask_qwen(question, context)
-        send_message(f"<b>Qwen Analysis:</b>\n\n{ai_answer}")
+        send_message(format_unified_analysis(res))
+        send_message("🧠 جاري تحليل الذكاء الاصطناعي للبيانات والأخبار...")
+        news_text = "\n".join(res.get('news', ['لا توجد أخبار']))
+        ctx = f"السعر: ${res['price']:.2f}, RSI: {res['rsi']:.1f}, Z-Score: {res['ou_z_score']:.2f}, Kelly: {res['kelly_half']*100:.1f}%, احتمال الربح: {res['prob_profit']:.1f}%, حجم التداول: {res['vol_msg']}\n\nالأخبار:\n{news_text}"
+        ans = ask_qwen("بناءً على البيانات الرياضية والأخبار أعلاه:\n1. هل الأخبار تدعم الإشارة الفنية؟\n2. ما هو تأثير الأخبار على الصفقة؟\n3. هل تنصح بالدخول الآن أم الانتظار؟\n4. ما هو الخطر الرئيسي؟", ctx)
+        send_message(f"🤖 <b>تحليل Qwen النهائي:</b>\n\n{ans}")
     elif cmd == '/help':
-        send_message("""<b>Bot Guide:</b>
-
-Reports: /report, /crypto, /stocks, /metals, /forex
-AI: /ask, /qwen, /ai
-Advanced: /smart <symbol>
-Alerts: /urgent
-
-Trading involves risk.""")
+        send_message("<b>الأوامر:</b>\n/smart <رمز> (مثال: /smart AAPL)\n/report\n/crypto\n/stocks\n\nالتداول ينطوي على مخاطر.")
     else:
-        if OPENROUTER_API_KEY or GROQ_API_KEY:
-            send_message("Thinking...")
-            answer = ask_ai(command)
-            send_message(f"{answer}")
-        else:
-            send_message("Commands: /start, /help")
+        send_message("استخدم /help للأوامر المتاحة.")
 
 def listen_for_commands():
     global LAST_UPDATE_ID
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {'offset': LAST_UPDATE_ID + 1, 'timeout': 10}
     try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if data.get('ok') and data.get('result'):
-            for update in data['result']:
-                update_id = update['update_id']
-                if 'message' in update and 'text' in update['message']:
-                    text = update['message']['text'].strip()
-                    chat_id = str(update['message']['chat']['id'])
-                    if chat_id == CHAT_ID:
-                        if text.startswith('/'):
-                            handle_command(text)
-                        else:
-                            if OPENROUTER_API_KEY or GROQ_API_KEY:
-                                send_message("Thinking...")
-                                answer = ask_ai(text)
-                                send_message(f"{answer}")
-                            else:
-                                send_message("Use /help")
-                        logger.info(f"Processed: {text[:50]}")
-                LAST_UPDATE_ID = max(LAST_UPDATE_ID, update_id)
-    except Exception as e:
-        logger.error(f"Error listening: {e}")
+        res = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", params={'offset': LAST_UPDATE_ID + 1, 'timeout': 10}, timeout=10).json()
+        if res.get('ok') and res.get('result'):
+            for u in res['result']:
+                if 'message' in u and 'text' in u['message'] and str(u['message']['chat']['id']) == CHAT_ID:
+                    handle_command(u['message']['text'].strip())
+                LAST_UPDATE_ID = max(LAST_UPDATE_ID, u['update_id'])
+    except: pass
 
 def scheduled_tasks():
     schedule.every(6).hours.do(analyze_all)
-    schedule.every().day.at("09:00").do(analyze_all)
-    schedule.every().day.at("15:00").do(analyze_all)
-    schedule.every().day.at("21:00").do(analyze_all)
-    schedule.every(1).hours.do(listen_for_commands)
     schedule.every(10).seconds.do(listen_for_commands)
     logger.info("Tasks scheduled!")
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Smart Trading Bot - Qwen + Groq")
-    print("=" * 60)
-    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Groq: {'OK' if GROQ_API_KEY else 'NOT SET'}")
-    print(f"OpenRouter: {'OK' if OPENROUTER_API_KEY else 'NOT SET'}")
-    print("Bot ready!")
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("Flask server running")
+    logger.info("Starting Ultimate Trading Bot...")
+    threading.Thread(target=run_flask, daemon=True).start()
     scheduled_tasks()
-    logger.info("Running initial report...")
     analyze_all()
     try:
         while True:
@@ -725,6 +384,3 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         logger.info("Bot stopped")
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        send_message(f"Error: {str(e)}")
