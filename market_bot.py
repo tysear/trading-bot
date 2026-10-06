@@ -9,7 +9,7 @@ from flask import Flask
 import threading
 import numpy as np
 from scipy.stats import linregress
-
+# update 3
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
