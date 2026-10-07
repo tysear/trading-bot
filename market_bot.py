@@ -212,6 +212,102 @@ def monte_carlo(prices, days=30, simulations=500):
     except:
         return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
 
+def calc_vector_gradient_strength(closes, volumes):
+    """
+    حساب قوة الاتجاه المتجهية (VGS)
+    باستخدام القيم العظمى والصغرى للمشتقات المتجهية
+    ‖∇f‖ = ((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (f/∂M)²)
+    """
+    try:
+        if len(closes) < 20:
+            return {
+                'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
+                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
+                'direction_score': 0
+            }
+        
+        prices = np.array(closes, dtype=float)
+        vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
+        
+        # حساب المشتقات الجزئية (التغيرات المعيارية)
+        # ∂f/P: تغير السعر المعياري
+        recent_prices = prices[-10:]
+        grad_P = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-10)
+        
+        # ∂f/∂V: تغير الحجم المعياري
+        recent_vols = vols[-10:]
+        avg_vol = np.mean(vols[-20:]) + 1e-10
+        grad_V = (np.mean(recent_vols[-5:]) - np.mean(recent_vols[:5])) / avg_vol
+        
+        # ∂f/∂R: تغير RSI المعياري
+        rsi_values = []
+        for i in range(14, len(prices) + 1):
+            rsi_values.append(calc_rsi(prices[:i].tolist()))
+        recent_rsi = rsi_values[-10:]
+        grad_R = (recent_rsi[-1] - recent_rsi[0]) / 100.0
+        
+        # ∂f/∂M: تغير MACD المعياري
+        macd_values = []
+        for i in range(26, len(prices) + 1):
+            macd_values.append(calc_ema(prices[:i].tolist(), 12) - calc_ema(prices[:i].tolist(), 26))
+        if len(macd_values) >= 10:
+            recent_macd = macd_values[-10:]
+            avg_macd = np.mean(np.abs(macd_values[-20:])) + 1e-10
+            grad_M = (np.mean(recent_macd[-5:]) - np.mean(recent_macd[:5])) / avg_macd
+        else:
+            grad_M = 0.0
+        
+        # الأوزان
+        w1, w2, w3, w4 = 0.4, 0.2, 0.2, 0.2
+        
+        # حساب التدرج الموزون
+        grad_P_w = w1 * grad_P
+        grad_V_w = w2 * grad_V
+        grad_R_w = w3 * grad_R
+        grad_M_w = w4 * grad_M
+        
+        # معيار التدرج (القيمة العظمى للمشتقة الاتجاهية)
+        vgs = np.sqrt(grad_P_w**2 + grad_V_w**2 + grad_R_w**2 + grad_M_w**2)
+        
+        # اتجاه التدرج (إشارة الشراء/البيع)
+        direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
+        
+        # تحديد القوة
+        if vgs > 0.15:
+            strength = 'قوي جداً 🔥'
+        elif vgs > 0.08:
+            strength = 'قوي 💪'
+        elif vgs > 0.03:
+            strength = 'متوسط '
+        else:
+            strength = 'ضعيف 😴'
+        
+        # تحديد الاتجاه
+        if direction_score > 0.02:
+            direction = 'صعودي '
+        elif direction_score < -0.02:
+            direction = 'هبوطي '
+        else:
+            direction = 'محايد ⚪'
+        
+        return {
+            'vgs': float(vgs),
+            'direction': direction,
+            'strength': strength,
+            'grad_P': float(grad_P),
+            'grad_V': float(grad_V),
+            'grad_R': float(grad_R),
+            'grad_M': float(grad_M),
+            'direction_score': float(direction_score)
+        }
+    except Exception as e:
+        logger.error(f"VGS error: {e}")
+        return {
+            'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ',
+            'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
+            'direction_score': 0
+        }
+
 def unified_analysis(symbol):
     try:
         data = fetch_data(symbol)
@@ -231,14 +327,19 @@ def unified_analysis(symbol):
         kelly = calc_kelly(closes)
         mc = monte_carlo(closes)
         news = fetch_news(symbol)
+        
+        # ✅ حساب مؤشر VGS (القيم العظمى والصغرى للمشتقات المتجهية)
+        vgs_data = calc_vector_gradient_strength(closes, volumes)
+        
         vol_msg = "محايد"
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
             if recent_vol > avg_vol * 1.2:
-                vol_msg = "مرتفع 📈"
+                vol_msg = "مرتفع "
             elif recent_vol < avg_vol * 0.8:
                 vol_msg = "منخفض 📉"
+        
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -246,8 +347,12 @@ def unified_analysis(symbol):
         if rsi < 75: buy_signals += 1
         if mc['prob_profit'] > 55: buy_signals += 1
         if ou['z_score'] < 1.5: buy_signals += 1
+        # ✅ إضافة إشارة VGS
+        if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05:
+            buy_signals += 1
+        
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
-        # ✅ إصلاح: حساب مستويات التداول بناءً على الاتجاه الصحيح
+        
         if direction == 'شراء':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
@@ -283,7 +388,8 @@ def unified_analysis(symbol):
             'tp3': tp3,
             'rr': rr,
             'news': news,
-            'buy_signals': buy_signals
+            'buy_signals': buy_signals,
+            'vgs': vgs_data
         }
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}")
@@ -294,6 +400,7 @@ def ask_qwen(data):
         return None
     try:
         news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
+        vgs = data.get('vgs', {})
         prompt = f"""أنت محلل مالي خبير. حلل البيانات التالية بالعربية:
 
 الرمز: {data['symbol']}
@@ -306,7 +413,10 @@ OU Z-Score: {data['ou']['z_score']:.2f}
 Kelly: {data['kelly']['kelly_half']*100:.1f}%
 احتمال الربح: {data['mc']['prob_profit']:.1f}%
 حجم التداول: {data['vol_msg']}
-إشارات الشراء: {data['buy_signals']}/6
+إشارات الشراء: {data['buy_signals']}/7
+معيار التدرج ‖∇f‖ (VGS): {vgs.get('vgs', 0):.3f}
+قوة الاتجاه: {vgs.get('strength', 'محايد')}
+اتجاه التدرج: {vgs.get('direction', 'محايد')}
 
 الأخبار:
 {news_text}
@@ -343,15 +453,16 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 def send_unified_report(data, ai_analysis=None):
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
     
-    # ✅ إضافة الإيموجي للعرض فقط
     if data['direction'] == 'شراء':
         direction_display = 'شراء 🟢'
     elif data['direction'] == 'بيع':
         direction_display = 'بيع 🔴'
     else:
-        direction_display = 'انتظار '
+        direction_display = 'انتظار ⚪'
     
-    part1 = f""" <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+    vgs = data.get('vgs', {})
+    
+    part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
@@ -373,11 +484,26 @@ def send_unified_report(data, ai_analysis=None):
 • نسبة النجاح: {data['kelly']['win_rate']*100:.1f}%
 • الحجم الآمن: {data['kelly']['kelly_half']*100:.1f}%
 
-🎲 <b>مونت كارلو (30 يوم):</b>
+ <b>مونت كارلو (30 يوم):</b>
 • احتمال الربح: {data['mc']['prob_profit']:.1f}%
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
+    
+    # ✅ إضافة قسم VGS
+    part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
+ المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+
+• معيار التدرج ‖f‖: {vgs.get('vgs', 0):.3f}
+• القوة: {vgs.get('strength', 'محايد')}
+• اتجاه التدرج: {vgs.get('direction', 'محايد')}
+• ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
+• ∂f/V (الحجم): {vgs.get('grad_V', 0):.3f}
+• f/∂R (RSI): {vgs.get('grad_R', 0):.3f}
+• ∂f/∂M (MACD): {vgs.get('grad_M', 0):.3f}
+
+💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
+    send_long_report(part_vgs)
     
     part3 = f"""📰 <b>آخر الأخبار:</b>
 {news_text}"""
@@ -402,19 +528,19 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part5)
 
 def smart_analysis(symbol):
-    send_message(f" جاري التحليل الشامل لـ {symbol}...")
+    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز.")
         return
-    send_message("🤖 جاري دمج التحليل مع الذكاء الاصطناعي...")
+    send_message(" جاري دمج التحليل مع الذكاء الاصطناعي...")
     ai = ask_qwen(data)
     send_unified_report(data, ai)
 
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -424,7 +550,7 @@ def simple_report():
                     price = hist['Close'].iloc[-1]
                     report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                 else:
-                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
             except Exception as e:
                 report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
@@ -471,6 +597,6 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot...")
+    logger.info("Starting Unified Trading Bot with VGS...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
