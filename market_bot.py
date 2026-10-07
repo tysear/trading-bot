@@ -246,17 +246,23 @@ def unified_analysis(symbol):
         if rsi < 75: buy_signals += 1
         if mc['prob_profit'] > 55: buy_signals += 1
         if ou['z_score'] < 1.5: buy_signals += 1
-        direction = 'شراء ' if buy_signals >= 4 else ('بيع 🔴' if buy_signals <= 2 else 'انتظار ⚪')
-        if direction == 'شراء 🟢':
+        direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
+        # ✅ إصلاح: حساب مستويات التداول بناءً على الاتجاه الصحيح
+        if direction == 'شراء':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
             tp2 = current_price + (atr * 3)
             tp3 = current_price + (atr * 4.5)
-        else:
+        elif direction == 'بيع':
             sl = current_price + (atr * 1.5)
             tp1 = current_price - (atr * 2)
             tp2 = current_price - (atr * 3)
             tp3 = current_price - (atr * 4.5)
+        else:
+            sl = current_price - (atr * 1.5)
+            tp1 = current_price + (atr * 2)
+            tp2 = current_price - (atr * 2)
+            tp3 = current_price + (atr * 3)
         rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         return {
             'symbol': symbol,
@@ -337,11 +343,19 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 def send_unified_report(data, ai_analysis=None):
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
     
-    part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+    # ✅ إضافة الإيموجي للعرض فقط
+    if data['direction'] == 'شراء':
+        direction_display = 'شراء 🟢'
+    elif data['direction'] == 'بيع':
+        direction_display = 'بيع 🔴'
+    else:
+        direction_display = 'انتظار '
+    
+    part1 = f""" <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
-📊 <b>الاتجاه:</b> {data['direction']}
+📊 <b>الاتجاه:</b> {direction_display}
 
 📈 <b>التحليل الفني:</b>
 • RSI: {data['rsi']:.1f}
@@ -388,7 +402,7 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part5)
 
 def smart_analysis(symbol):
-    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
+    send_message(f" جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز.")
@@ -410,7 +424,7 @@ def simple_report():
                     price = hist['Close'].iloc[-1]
                     report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                 else:
-                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
             except Exception as e:
                 report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
