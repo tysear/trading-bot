@@ -262,7 +262,7 @@ def calc_vector_gradient_strength(closes, volumes):
         elif vgs > 0.08:
             strength = 'قوي 💪'
         elif vgs > 0.03:
-            strength = 'متوسط ⚡'
+            strength = 'متوسط '
         else:
             strength = 'ضعيف 😴'
         
@@ -309,25 +309,25 @@ def get_action_recommendation(data):
         
         # 1. تقييم VGS (المحرك الرئيسي للاتجاه)
         if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08:
-            score += 4  # زخم صعودي قوي (Long قوي)
+            score += 4
         elif vgs_direction == 'صعودي ':
-            score += 2  # زخم صعودي ضعيف
+            score += 2
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08:
-            score -= 4  # زخم هبوطي قوي (Short قوي)
-        elif vgs_direction == 'هبوطي ':
-            score -= 2  # زخم هبوطي ضعيف
+            score -= 4
+        elif vgs_direction == 'هبوطي 🔴':
+            score -= 2
         
         # 2. تقييم RSI
         if rsi < 30:
-            score += 2  # تشبع بيعي (فرصة Long)
+            score += 2
         elif rsi < 40:
             score += 1
         elif rsi > 70:
-            score -= 2  # تشبع شرائي (فرصة Short)
+            score -= 2
         elif rsi > 60:
             score -= 1
         
-        # 3. تقييم Kelly (الحجم الآمن)
+        # 3. تقييم Kelly
         if kelly > 0.15:
             score += 2 if score > 0 else -2
         elif kelly < 0.05:
@@ -345,11 +345,12 @@ def get_action_recommendation(data):
         elif buy_signals <= 2:
             score -= 2
         
-        # --- تحديد التوصية النهائية بصياغة فيوتشر ---
+        # تحديد التوصية النهائية
         if score >= 5:
             return {
-                'action': 'افتح شراء (Long) قوي ',
-                'emoji': '🟢',
+                'action': 'افتح شراء (Long) قوي 🟢',
+                'emoji': '',
+                'trade_type': 'LONG',
                 'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                 'confidence': 'عالية جداً',
                 'score': score
@@ -358,6 +359,7 @@ def get_action_recommendation(data):
             return {
                 'action': 'افتح شراء (Long) 🟢',
                 'emoji': '🟢',
+                'trade_type': 'LONG',
                 'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
                 'confidence': 'عالية',
                 'score': score
@@ -366,22 +368,25 @@ def get_action_recommendation(data):
             return {
                 'action': 'انتظار / دخول حذر جداً 🟡',
                 'emoji': '🟡',
+                'trade_type': 'WAIT',
                 'description': 'إشارات مختلطة أو زخم ضعيف. يفضل الانتظار لتوضيح الاتجاه.',
                 'confidence': 'متوسطة',
                 'score': score
             }
         elif score >= -1:
             return {
-                'action': 'انتظار ',
+                'action': 'انتظار ⚪',
                 'emoji': '⚪',
+                'trade_type': 'WAIT',
                 'description': 'السوق متذبذب (Range). تجنب فتح مراكز جديدة حتى تظهر إشارة واضحة.',
                 'confidence': 'منخفضة',
                 'score': score
             }
         elif score >= -4:
             return {
-                'action': 'افتح بيع (Short) 🟠',
+                'action': 'افتح بيع (Short) ',
                 'emoji': '🟠',
+                'trade_type': 'SHORT',
                 'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع مع الالتزام بوقف الخسارة.',
                 'confidence': 'عالية',
                 'score': score
@@ -390,6 +395,7 @@ def get_action_recommendation(data):
             return {
                 'action': 'افتح بيع (Short) قوي 🔴',
                 'emoji': '🔴',
+                'trade_type': 'SHORT',
                 'description': 'انهيار أو زخم هبوطي قوي جداً مدعوم بالحجم والمؤشرات. فرصة Short ممتازة.',
                 'confidence': 'عالية جداً',
                 'score': score
@@ -398,8 +404,9 @@ def get_action_recommendation(data):
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
         return {
-            'action': 'انتظار ⚪',
+            'action': 'انتظار ',
             'emoji': '⚪',
+            'trade_type': 'WAIT',
             'description': 'تعذر حساب التوصية',
             'confidence': 'غير محدد',
             'score': 0
@@ -431,9 +438,9 @@ def unified_analysis(symbol):
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
             if recent_vol > avg_vol * 1.2:
-                vol_msg = "مرتفع 📈"
+                vol_msg = "مرتفع "
             elif recent_vol < avg_vol * 0.8:
-                vol_msg = "منخفض "
+                vol_msg = "منخفض 📉"
         
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
@@ -447,23 +454,7 @@ def unified_analysis(symbol):
         
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
         
-        if direction == 'شراء':
-            sl = current_price - (atr * 1.5)
-            tp1 = current_price + (atr * 2)
-            tp2 = current_price + (atr * 3)
-            tp3 = current_price + (atr * 4.5)
-        elif direction == 'بيع':
-            sl = current_price + (atr * 1.5)
-            tp1 = current_price - (atr * 2)
-            tp2 = current_price - (atr * 3)
-            tp3 = current_price - (atr * 4.5)
-        else:
-            sl = current_price - (atr * 1.5)
-            tp1 = current_price + (atr * 2)
-            tp2 = current_price - (atr * 2)
-            tp3 = current_price + (atr * 3)
-        rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
-        
+        # حساب توصية الإجراء أولاً
         recommendation = get_action_recommendation({
             'vgs': vgs_data,
             'rsi': rsi,
@@ -472,6 +463,27 @@ def unified_analysis(symbol):
             'direction': direction,
             'buy_signals': buy_signals
         })
+        
+        # ✅ حساب مستويات التداول بناءً على التوصية النهائية (Long/Short) وليس direction فقط
+        trade_type = recommendation.get('trade_type', 'WAIT')
+        
+        if trade_type == 'LONG':
+            sl = current_price - (atr * 1.5)
+            tp1 = current_price + (atr * 2)
+            tp2 = current_price + (atr * 3)
+            tp3 = current_price + (atr * 4.5)
+        elif trade_type == 'SHORT':
+            sl = current_price + (atr * 1.5)
+            tp1 = current_price - (atr * 2)
+            tp2 = current_price - (atr * 3)
+            tp3 = current_price - (atr * 4.5)
+        else:  # WAIT
+            sl = current_price - (atr * 1.5)
+            tp1 = current_price + (atr * 2)
+            tp2 = current_price - (atr * 2)
+            tp3 = current_price + (atr * 3)
+        
+        rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         
         return {
             'symbol': symbol,
@@ -494,7 +506,8 @@ def unified_analysis(symbol):
             'news': news,
             'buy_signals': buy_signals,
             'vgs': vgs_data,
-            'recommendation': recommendation
+            'recommendation': recommendation,
+            'trade_type': trade_type
         }
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}")
@@ -534,7 +547,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 3. المخاطر الرئيسية
 4. نصيحة عملية لمتداول فيوتشر
 
-⚠️ ليس نصيحة مالية."""
+️ ليس نصيحة مالية."""
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -599,15 +612,15 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part2)
     
     part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ‖∇f = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+ المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
 • معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
 • اتجاه التدرج: {vgs.get('direction', 'محايد')}
-• ∂f/P (السعر): {vgs.get('grad_P', 0):.3f}
-• f/∂V (الحجم): {vgs.get('grad_V', 0):.3f}
+• ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
+• ∂f/∂V (الحجم): {vgs.get('grad_V', 0):.3f}
 • ∂f/∂R (RSI): {vgs.get('grad_R', 0):.3f}
-• ∂f/M (MACD): {vgs.get('grad_M', 0):.3f}
+• ∂f/∂M (MACD): {vgs.get('grad_M', 0):.3f}
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
@@ -624,7 +637,7 @@ def send_unified_report(data, ai_analysis=None):
         send_long_report(part4)
     
     part5 = f"""{'='*45}
-💰 <b>مستويات التداول:</b>
+💰 <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -638,7 +651,7 @@ def send_unified_report(data, ai_analysis=None):
 
 {rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
 
-📋 <b>الوصف:</b> {rec.get('description', '')}
+ <b>الوصف:</b> {rec.get('description', '')}
 📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
 🔢 <b>نقاط التقييم:</b> {rec.get('score', 0)}
 
@@ -646,7 +659,7 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
-    send_message(f" جاري التحليل الشامل لـ {symbol}...")
+    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز.")
@@ -668,9 +681,9 @@ def simple_report():
                     price = hist['Close'].iloc[-1]
                     report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                 else:
-                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
             except Exception as e:
-                report += f"❌ <b>{symbol}</b>: خطأ\n"
+                report += f" <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
         send_message(f"خطأ: {str(e)}")
