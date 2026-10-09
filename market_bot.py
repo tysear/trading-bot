@@ -69,16 +69,53 @@ def send_long_report(report):
         time.sleep(0.5)
 
 def fetch_data(symbol):
+    """جلب البيانات وتنظيفها من القيم الفارغة NaN"""
     try:
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="3mo")
+        
         if hist.empty:
+            logger.error(f"No data for {symbol}")
             return None
+        
+        # تحويل إلى قوائم
+        closes = hist['Close'].tolist()
+        highs = hist['High'].tolist()
+        lows = hist['Low'].tolist()
+        volumes = hist['Volume'].tolist()
+        
+        # ✅ تنظيف البيانات من NaN
+        cleaned_data = []
+        for i in range(len(closes)):
+            if (not np.isnan(closes[i]) and 
+                not np.isnan(highs[i]) and 
+                not np.isnan(lows[i]) and 
+                not np.isnan(volumes[i]) and
+                closes[i] > 0 and highs[i] > 0 and lows[i] > 0):
+                cleaned_data.append({
+                    'close': closes[i],
+                    'high': highs[i],
+                    'low': lows[i],
+                    'volume': volumes[i]
+                })
+        
+        if len(cleaned_data) < 50:
+            logger.error(f"Insufficient clean data for {symbol}: {len(cleaned_data)}")
+            return None
+        
+        # فصل البيانات المنظفة
+        closes = [d['close'] for d in cleaned_data]
+        highs = [d['high'] for d in cleaned_data]
+        lows = [d['low'] for d in cleaned_data]
+        volumes = [d['volume'] for d in cleaned_data]
+        
+        logger.info(f"Cleaned data for {symbol}: {len(closes)} records")
+        
         return {
-            'closes': hist['Close'].tolist(),
-            'highs': hist['High'].tolist(),
-            'lows': hist['Low'].tolist(),
-            'volumes': hist['Volume'].tolist()
+            'closes': closes,
+            'highs': highs,
+            'lows': lows,
+            'volumes': volumes
         }
     except Exception as e:
         logger.error(f"Fetch error {symbol}: {e}")
@@ -155,6 +192,10 @@ def calc_atr(highs, lows, closes, period=14):
 def calc_ou_model(prices):
     try:
         closes = np.array(prices, dtype=float)
+        # إزالة القيم الفارغة
+        closes = closes[~np.isnan(closes)]
+        if len(closes) < 10:
+            return {'mu': 0, 'sigma': 0, 'z_score': 0}
         returns = np.diff(np.log(closes))
         lookback = min(50, len(closes) - 1)
         recent = closes[-lookback:]
@@ -169,6 +210,9 @@ def calc_ou_model(prices):
 def calc_kelly(prices):
     try:
         closes = np.array(prices, dtype=float)
+        closes = closes[~np.isnan(closes)]
+        if len(closes) < 10:
+            return {'win_rate': 0.5, 'kelly_half': 0.1}
         wins = 0
         total = min(50, len(closes) - 5)
         for i in range(-total, -5):
@@ -186,6 +230,9 @@ def calc_kelly(prices):
 def monte_carlo(prices, days=30, simulations=500):
     try:
         closes = np.array(prices, dtype=float)
+        closes = closes[~np.isnan(closes)]
+        if len(closes) < 10:
+            return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
         returns = np.diff(np.log(closes))
         mu = float(np.mean(returns))
         sigma = float(np.std(returns))
@@ -223,6 +270,18 @@ def calc_vector_gradient_strength(closes, volumes):
         
         prices = np.array(closes, dtype=float)
         vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
+        
+        # إزالة القيم الفارغة
+        valid_mask = ~(np.isnan(prices) | np.isnan(vols))
+        prices = prices[valid_mask]
+        vols = vols[valid_mask]
+        
+        if len(prices) < 20:
+            return {
+                'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
+                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
+                'direction_score': 0
+            }
         
         recent_prices = prices[-10:]
         grad_P = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-10)
@@ -262,7 +321,7 @@ def calc_vector_gradient_strength(closes, volumes):
         elif vgs > 0.08:
             strength = 'قوي 💪'
         elif vgs > 0.03:
-            strength = 'متوسط '
+            strength = 'متوسط ⚡'
         else:
             strength = 'ضعيف 😴'
         
@@ -292,9 +351,6 @@ def calc_vector_gradient_strength(closes, volumes):
         }
 
 def get_action_recommendation(data):
-    """
-    حساب توصية الإجراء النهائية (مخصصة للفيوتشر والفوركس: Long & Short)
-    """
     try:
         vgs = data.get('vgs', {})
         vgs_value = vgs.get('vgs', 0)
@@ -307,17 +363,15 @@ def get_action_recommendation(data):
         
         score = 0
         
-        # 1. تقييم VGS (المحرك الرئيسي للاتجاه)
         if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08:
             score += 4
-        elif vgs_direction == 'صعودي ':
+        elif vgs_direction == 'صعودي 🟢':
             score += 2
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08:
             score -= 4
         elif vgs_direction == 'هبوطي 🔴':
             score -= 2
         
-        # 2. تقييم RSI
         if rsi < 30:
             score += 2
         elif rsi < 40:
@@ -327,29 +381,25 @@ def get_action_recommendation(data):
         elif rsi > 60:
             score -= 1
         
-        # 3. تقييم Kelly
         if kelly > 0.15:
             score += 2 if score > 0 else -2
         elif kelly < 0.05:
             score -= 1 if score > 0 else 1
         
-        # 4. تقييم مونت كارلو
         if mc_prob > 65:
             score += 2
         elif mc_prob < 35:
             score -= 2
         
-        # 5. إشارات الشراء/البيع
         if buy_signals >= 6:
             score += 2
         elif buy_signals <= 2:
             score -= 2
         
-        # تحديد التوصية النهائية
         if score >= 5:
             return {
                 'action': 'افتح شراء (Long) قوي 🟢',
-                'emoji': '',
+                'emoji': '🟢',
                 'trade_type': 'LONG',
                 'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                 'confidence': 'عالية جداً',
@@ -357,7 +407,7 @@ def get_action_recommendation(data):
             }
         elif score >= 2:
             return {
-                'action': 'افتح شراء (Long) 🟢',
+                'action': 'افتح شراء (Long) ',
                 'emoji': '🟢',
                 'trade_type': 'LONG',
                 'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
@@ -384,7 +434,7 @@ def get_action_recommendation(data):
             }
         elif score >= -4:
             return {
-                'action': 'افتح بيع (Short) ',
+                'action': 'افتح بيع (Short) 🟠',
                 'emoji': '🟠',
                 'trade_type': 'SHORT',
                 'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع مع الالتزام بوقف الخسارة.',
@@ -404,7 +454,7 @@ def get_action_recommendation(data):
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
         return {
-            'action': 'انتظار ',
+            'action': 'انتظار ⚪',
             'emoji': '⚪',
             'trade_type': 'WAIT',
             'description': 'تعذر حساب التوصية',
@@ -417,11 +467,19 @@ def unified_analysis(symbol):
         data = fetch_data(symbol)
         if not data or len(data['closes']) < 50:
             return None
+        
         closes = data['closes']
         highs = data['highs']
         lows = data['lows']
         volumes = data.get('volumes', [])
+        
         current_price = float(closes[-1])
+        
+        # ✅ التحقق من أن السعر ليس NaN أو صفر
+        if np.isnan(current_price) or current_price <= 0:
+            logger.error(f"Invalid price for {symbol}: {current_price}")
+            return None
+        
         rsi = calc_rsi(closes)
         ema20 = calc_ema(closes, 20)
         ema50 = calc_ema(closes, 50)
@@ -438,7 +496,7 @@ def unified_analysis(symbol):
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
             if recent_vol > avg_vol * 1.2:
-                vol_msg = "مرتفع "
+                vol_msg = "مرتفع 📈"
             elif recent_vol < avg_vol * 0.8:
                 vol_msg = "منخفض 📉"
         
@@ -454,7 +512,6 @@ def unified_analysis(symbol):
         
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
         
-        # حساب توصية الإجراء أولاً
         recommendation = get_action_recommendation({
             'vgs': vgs_data,
             'rsi': rsi,
@@ -464,7 +521,6 @@ def unified_analysis(symbol):
             'buy_signals': buy_signals
         })
         
-        # ✅ حساب مستويات التداول بناءً على التوصية النهائية (Long/Short) وليس direction فقط
         trade_type = recommendation.get('trade_type', 'WAIT')
         
         if trade_type == 'LONG':
@@ -477,7 +533,7 @@ def unified_analysis(symbol):
             tp1 = current_price - (atr * 2)
             tp2 = current_price - (atr * 3)
             tp3 = current_price - (atr * 4.5)
-        else:  # WAIT
+        else:
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
             tp2 = current_price - (atr * 2)
@@ -547,7 +603,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 3. المخاطر الرئيسية
 4. نصيحة عملية لمتداول فيوتشر
 
-️ ليس نصيحة مالية."""
+⚠️ ليس نصيحة مالية."""
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -611,8 +667,8 @@ def send_unified_report(data, ai_analysis=None):
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
     
-    part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
- المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+    part_vgs = f""" <b>قوة الاتجاه المتجهية (VGS):</b>
+📐 المعادلة: ‖∇f‖ = √((f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
 • معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
@@ -625,7 +681,7 @@ def send_unified_report(data, ai_analysis=None):
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
     
-    part3 = f"""📰 <b>آخر الأخبار:</b>
+    part3 = f""" <b>آخر الأخبار:</b>
 {news_text}"""
     send_long_report(part3)
     
@@ -637,7 +693,7 @@ def send_unified_report(data, ai_analysis=None):
         send_long_report(part4)
     
     part5 = f"""{'='*45}
-💰 <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
+ <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -649,9 +705,9 @@ def send_unified_report(data, ai_analysis=None):
 🎯 <b>توصية الإجراء النهائية (فيوتشر/فوركس):</b>
 {'='*45}
 
-{rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
+{rec.get('emoji', '')} <b>{rec.get('action', 'انتظار')}</b>
 
- <b>الوصف:</b> {rec.get('description', '')}
+📋 <b>الوصف:</b> {rec.get('description', '')}
 📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
 🔢 <b>نقاط التقييم:</b> {rec.get('score', 0)}
 
@@ -662,7 +718,7 @@ def smart_analysis(symbol):
     send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
-        send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز.")
+        send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     send_message("🤖 جاري دمج التحليل مع الذكاء الاصطناعي...")
     ai = ask_qwen(data)
@@ -671,7 +727,7 @@ def smart_analysis(symbol):
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -679,11 +735,14 @@ def simple_report():
                 hist = ticker.history(period="5d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
-                    report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
+                    if not np.isnan(price) and price > 0:
+                        report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
+                    else:
+                        report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
                     report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
             except Exception as e:
-                report += f" <b>{symbol}</b>: خطأ\n"
+                report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
         send_message(f"خطأ: {str(e)}")
@@ -728,6 +787,6 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with VGS and Futures Recommendations...")
+    logger.info("Starting Unified Trading Bot with NaN protection...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
