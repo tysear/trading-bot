@@ -69,53 +69,31 @@ def send_long_report(report):
         time.sleep(0.5)
 
 def fetch_data(symbol):
-    """جلب البيانات وتنظيفها من القيم الفارغة NaN"""
     try:
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="3mo")
-        
         if hist.empty:
-            logger.error(f"No data for {symbol}")
             return None
-        
-        # تحويل إلى قوائم
         closes = hist['Close'].tolist()
         highs = hist['High'].tolist()
         lows = hist['Low'].tolist()
         volumes = hist['Volume'].tolist()
-        
-        # ✅ تنظيف البيانات من NaN
         cleaned_data = []
         for i in range(len(closes)):
-            if (not np.isnan(closes[i]) and 
-                not np.isnan(highs[i]) and 
-                not np.isnan(lows[i]) and 
-                not np.isnan(volumes[i]) and
+            if (not np.isnan(closes[i]) and not np.isnan(highs[i]) and 
+                not np.isnan(lows[i]) and not np.isnan(volumes[i]) and
                 closes[i] > 0 and highs[i] > 0 and lows[i] > 0):
                 cleaned_data.append({
-                    'close': closes[i],
-                    'high': highs[i],
-                    'low': lows[i],
-                    'volume': volumes[i]
+                    'close': closes[i], 'high': highs[i],
+                    'low': lows[i], 'volume': volumes[i]
                 })
-        
         if len(cleaned_data) < 50:
-            logger.error(f"Insufficient clean data for {symbol}: {len(cleaned_data)}")
             return None
-        
-        # فصل البيانات المنظفة
-        closes = [d['close'] for d in cleaned_data]
-        highs = [d['high'] for d in cleaned_data]
-        lows = [d['low'] for d in cleaned_data]
-        volumes = [d['volume'] for d in cleaned_data]
-        
-        logger.info(f"Cleaned data for {symbol}: {len(closes)} records")
-        
         return {
-            'closes': closes,
-            'highs': highs,
-            'lows': lows,
-            'volumes': volumes
+            'closes': [d['close'] for d in cleaned_data],
+            'highs': [d['high'] for d in cleaned_data],
+            'lows': [d['low'] for d in cleaned_data],
+            'volumes': [d['volume'] for d in cleaned_data]
         }
     except Exception as e:
         logger.error(f"Fetch error {symbol}: {e}")
@@ -127,14 +105,8 @@ def fetch_news(symbol):
         news = ticker.news
         if not news or len(news) == 0:
             return ["لا توجد أخبار حديثة."]
-        news_list = []
-        for item in news[:3]:
-            title = item.get('title', 'بدون عنوان')
-            publisher = item.get('publisher', 'مجهول')
-            news_list.append(f"• {title} ({publisher})")
-        return news_list
-    except Exception as e:
-        logger.error(f"News error: {e}")
+        return [f"• {item.get('title', 'بدون عنوان')} ({item.get('publisher', 'مجهول')})" for item in news[:3]]
+    except:
         return ["تعذر جلب الأخبار."]
 
 def calc_rsi(prices, period=14):
@@ -150,8 +122,7 @@ def calc_rsi(prices, period=14):
         avg_loss = sum(losses) / period
         if avg_loss == 0:
             return 100.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
+        return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
     except:
         return 50.0
 
@@ -179,11 +150,7 @@ def calc_atr(highs, lows, closes, period=14):
             return closes[-1] * 0.02
         true_ranges = []
         for i in range(-period, 0):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i-1]),
-                abs(lows[i] - closes[i-1])
-            )
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
             true_ranges.append(tr)
         return sum(true_ranges) / period
     except:
@@ -192,7 +159,6 @@ def calc_atr(highs, lows, closes, period=14):
 def calc_ou_model(prices):
     try:
         closes = np.array(prices, dtype=float)
-        # إزالة القيم الفارغة
         closes = closes[~np.isnan(closes)]
         if len(closes) < 10:
             return {'mu': 0, 'sigma': 0, 'z_score': 0}
@@ -222,8 +188,7 @@ def calc_kelly(prices):
         win_loss_ratio = 2.0
         edge = (win_rate * win_loss_ratio) - (1 - win_rate)
         kelly_full = edge / win_loss_ratio if win_loss_ratio > 0 else 0
-        kelly_half = min(kelly_full / 2, 0.25)
-        return {'win_rate': win_rate, 'kelly_half': max(kelly_half, 0)}
+        return {'win_rate': win_rate, 'kelly_half': max(min(kelly_full / 2, 0.25), 0)}
     except:
         return {'win_rate': 0.5, 'kelly_half': 0.1}
 
@@ -246,15 +211,11 @@ def monte_carlo(prices, days=30, simulations=500):
                 price = price * np.exp(mu + sigma * z)
             final_prices.append(price)
         final_prices = np.array(final_prices)
-        prob_profit = float(np.sum(final_prices > current) / simulations * 100)
-        prob_loss_10 = float(np.sum(final_prices < current * 0.9) / simulations * 100)
-        p5 = float(np.percentile(final_prices, 5))
-        p95 = float(np.percentile(final_prices, 95))
         return {
-            'prob_profit': prob_profit,
-            'prob_loss_10': prob_loss_10,
-            'p5': p5,
-            'p95': p95
+            'prob_profit': float(np.sum(final_prices > current) / simulations * 100),
+            'prob_loss_10': float(np.sum(final_prices < current * 0.9) / simulations * 100),
+            'p5': float(np.percentile(final_prices, 5)),
+            'p95': float(np.percentile(final_prices, 95))
         }
     except:
         return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
@@ -262,95 +223,54 @@ def monte_carlo(prices, days=30, simulations=500):
 def calc_vector_gradient_strength(closes, volumes):
     try:
         if len(closes) < 20:
-            return {
-                'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
-                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
-                'direction_score': 0
-            }
-        
+            return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
+                    'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
         prices = np.array(closes, dtype=float)
         vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
-        
-        # إزالة القيم الفارغة
         valid_mask = ~(np.isnan(prices) | np.isnan(vols))
         prices = prices[valid_mask]
         vols = vols[valid_mask]
-        
         if len(prices) < 20:
-            return {
-                'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
-                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
-                'direction_score': 0
-            }
-        
+            return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
+                    'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
         recent_prices = prices[-10:]
         grad_P = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-10)
-        
         recent_vols = vols[-10:]
         avg_vol = np.mean(vols[-20:]) + 1e-10
         grad_V = (np.mean(recent_vols[-5:]) - np.mean(recent_vols[:5])) / avg_vol
-        
-        rsi_values = []
-        for i in range(14, len(prices) + 1):
-            rsi_values.append(calc_rsi(prices[:i].tolist()))
+        rsi_values = [calc_rsi(prices[:i].tolist()) for i in range(14, len(prices) + 1)]
         recent_rsi = rsi_values[-10:]
         grad_R = (recent_rsi[-1] - recent_rsi[0]) / 100.0
-        
-        macd_values = []
-        for i in range(26, len(prices) + 1):
-            macd_values.append(calc_ema(prices[:i].tolist(), 12) - calc_ema(prices[:i].tolist(), 26))
+        macd_values = [calc_ema(prices[:i].tolist(), 12) - calc_ema(prices[:i].tolist(), 26) for i in range(26, len(prices) + 1)]
         if len(macd_values) >= 10:
             recent_macd = macd_values[-10:]
             avg_macd = np.mean(np.abs(macd_values[-20:])) + 1e-10
             grad_M = (np.mean(recent_macd[-5:]) - np.mean(recent_macd[:5])) / avg_macd
         else:
             grad_M = 0.0
-        
         w1, w2, w3, w4 = 0.4, 0.2, 0.2, 0.2
-        
-        grad_P_w = w1 * grad_P
-        grad_V_w = w2 * grad_V
-        grad_R_w = w3 * grad_R
-        grad_M_w = w4 * grad_M
-        
+        grad_P_w, grad_V_w, grad_R_w, grad_M_w = w1*grad_P, w2*grad_V, w3*grad_R, w4*grad_M
         vgs = np.sqrt(grad_P_w**2 + grad_V_w**2 + grad_R_w**2 + grad_M_w**2)
         direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
-        
-        if vgs > 0.15:
-            strength = 'قوي جداً 🔥'
-        elif vgs > 0.08:
-            strength = 'قوي 💪'
-        elif vgs > 0.03:
-            strength = 'متوسط ⚡'
-        else:
-            strength = 'ضعيف 😴'
-        
-        if direction_score > 0.02:
-            direction = 'صعودي 🟢'
-        elif direction_score < -0.02:
-            direction = 'هبوطي 🔴'
-        else:
-            direction = 'محايد ⚪'
-        
-        return {
-            'vgs': float(vgs),
-            'direction': direction,
-            'strength': strength,
-            'grad_P': float(grad_P),
-            'grad_V': float(grad_V),
-            'grad_R': float(grad_R),
-            'grad_M': float(grad_M),
-            'direction_score': float(direction_score)
-        }
+        if vgs > 0.15: strength = 'قوي جداً 🔥'
+        elif vgs > 0.08: strength = 'قوي 💪'
+        elif vgs > 0.03: strength = 'متوسط ⚡'
+        else: strength = 'ضعيف 😴'
+        if direction_score > 0.02: direction = 'صعودي 🟢'
+        elif direction_score < -0.02: direction = 'هبوطي 🔴'
+        else: direction = 'محايد ⚪'
+        return {'vgs': float(vgs), 'direction': direction, 'strength': strength,
+                'grad_P': float(grad_P), 'grad_V': float(grad_V),
+                'grad_R': float(grad_R), 'grad_M': float(grad_M), 'direction_score': float(direction_score)}
     except Exception as e:
         logger.error(f"VGS error: {e}")
-        return {
-            'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ',
-            'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0,
-            'direction_score': 0
-        }
+        return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ',
+                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
 def get_action_recommendation(data):
+    """
+    توصية الإجراء - معدلة لتتوافق مع الاتجاه العام
+    """
     try:
         vgs = data.get('vgs', {})
         vgs_value = vgs.get('vgs', 0)
@@ -358,56 +278,61 @@ def get_action_recommendation(data):
         rsi = data.get('rsi', 50)
         kelly = data.get('kelly', {}).get('kelly_half', 0.1)
         mc_prob = data.get('mc', {}).get('prob_profit', 50)
-        direction = data.get('direction', 'انتظار')
+        direction = data.get('direction', 'انتظار')  # 'شراء' أو 'بيع' أو 'انتظار'
         buy_signals = data.get('buy_signals', 0)
         
         score = 0
         
-        if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08:
-            score += 4
-        elif vgs_direction == 'صعودي 🟢':
-            score += 2
-        elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08:
-            score -= 4
-        elif vgs_direction == 'هبوطي 🔴':
-            score -= 2
+        # ✅ تعديل الأوزان: جعل الاتجاه العام (direction) له وزن أكبر
+        # الاتجاه العام يعتمد على 7 إشارات، لذا يجب أن يكون له تأثير كبير
         
-        if rsi < 30:
+        # 1. الاتجاه العام (أهم عامل - وزن كبير)
+        if direction == 'شراء':
+            score += 5  # وزن كبير للاتجاه العام
+        elif direction == 'بيع':
+            score -= 5
+        
+        # 2. VGS (وزن معتدل - لا يطغى على الاتجاه العام)
+        if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08:
             score += 2
-        elif rsi < 40:
+        elif vgs_direction == 'صعودي 🟢':
             score += 1
-        elif rsi > 70:
+        elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08:
             score -= 2
-        elif rsi > 60:
+        elif vgs_direction == 'هبوطي 🔴':
             score -= 1
         
-        if kelly > 0.15:
-            score += 2 if score > 0 else -2
-        elif kelly < 0.05:
-            score -= 1 if score > 0 else 1
+        # 3. RSI
+        if rsi < 30: score += 1
+        elif rsi < 40: score += 0.5
+        elif rsi > 70: score -= 1
+        elif rsi > 60: score -= 0.5
         
-        if mc_prob > 65:
-            score += 2
-        elif mc_prob < 35:
-            score -= 2
+        # 4. Kelly
+        if kelly > 0.15: score += 1 if score > 0 else -1
+        elif kelly < 0.05: score -= 0.5 if score > 0 else 0.5
         
-        if buy_signals >= 6:
-            score += 2
-        elif buy_signals <= 2:
-            score -= 2
+        # 5. مونت كارلو
+        if mc_prob > 65: score += 1
+        elif mc_prob < 35: score -= 1
         
-        if score >= 5:
+        # 6. عدد إشارات الشراء (تأكيد إضافي)
+        if buy_signals >= 6: score += 1
+        elif buy_signals <= 2: score -= 1
+        
+        # تحديد التوصية النهائية
+        if score >= 6:
             return {
-                'action': 'افتح شراء (Long) قوي 🟢',
+                'action': 'افتح شراء (Long) قوي ',
                 'emoji': '🟢',
                 'trade_type': 'LONG',
                 'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                 'confidence': 'عالية جداً',
                 'score': score
             }
-        elif score >= 2:
+        elif score >= 3:
             return {
-                'action': 'افتح شراء (Long) ',
+                'action': 'افتح شراء (Long) 🟢',
                 'emoji': '🟢',
                 'trade_type': 'LONG',
                 'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
@@ -416,28 +341,37 @@ def get_action_recommendation(data):
             }
         elif score >= 1:
             return {
-                'action': 'انتظار / دخول حذر جداً 🟡',
+                'action': 'دخول حذر (Long) 🟡',
                 'emoji': '🟡',
-                'trade_type': 'WAIT',
-                'description': 'إشارات مختلطة أو زخم ضعيف. يفضل الانتظار لتوضيح الاتجاه.',
+                'trade_type': 'LONG',
+                'description': 'إشارات إيجابية لكن ضعيفة. ادخل بحجم صغير فقط.',
                 'confidence': 'متوسطة',
                 'score': score
             }
         elif score >= -1:
             return {
                 'action': 'انتظار ⚪',
-                'emoji': '⚪',
+                'emoji': '',
                 'trade_type': 'WAIT',
-                'description': 'السوق متذبذب (Range). تجنب فتح مراكز جديدة حتى تظهر إشارة واضحة.',
+                'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                 'confidence': 'منخفضة',
                 'score': score
             }
-        elif score >= -4:
+        elif score >= -3:
             return {
-                'action': 'افتح بيع (Short) 🟠',
+                'action': 'دخول حذر (Short) 🟠',
                 'emoji': '🟠',
                 'trade_type': 'SHORT',
-                'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع مع الالتزام بوقف الخسارة.',
+                'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
+                'confidence': 'متوسطة',
+                'score': score
+            }
+        elif score >= -6:
+            return {
+                'action': 'افتح بيع (Short) ',
+                'emoji': '🟠',
+                'trade_type': 'SHORT',
+                'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع.',
                 'confidence': 'عالية',
                 'score': score
             }
@@ -446,40 +380,27 @@ def get_action_recommendation(data):
                 'action': 'افتح بيع (Short) قوي 🔴',
                 'emoji': '🔴',
                 'trade_type': 'SHORT',
-                'description': 'انهيار أو زخم هبوطي قوي جداً مدعوم بالحجم والمؤشرات. فرصة Short ممتازة.',
+                'description': 'انهيار أو زخم هبوطي قوي جداً. فرصة Short ممتازة.',
                 'confidence': 'عالية جداً',
                 'score': score
             }
-            
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
-        return {
-            'action': 'انتظار ⚪',
-            'emoji': '⚪',
-            'trade_type': 'WAIT',
-            'description': 'تعذر حساب التوصية',
-            'confidence': 'غير محدد',
-            'score': 0
-        }
+        return {'action': 'انتظار ', 'emoji': '⚪', 'trade_type': 'WAIT',
+                'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
 
 def unified_analysis(symbol):
     try:
         data = fetch_data(symbol)
         if not data or len(data['closes']) < 50:
             return None
-        
         closes = data['closes']
         highs = data['highs']
         lows = data['lows']
         volumes = data.get('volumes', [])
-        
         current_price = float(closes[-1])
-        
-        # ✅ التحقق من أن السعر ليس NaN أو صفر
         if np.isnan(current_price) or current_price <= 0:
-            logger.error(f"Invalid price for {symbol}: {current_price}")
             return None
-        
         rsi = calc_rsi(closes)
         ema20 = calc_ema(closes, 20)
         ema50 = calc_ema(closes, 50)
@@ -490,16 +411,12 @@ def unified_analysis(symbol):
         mc = monte_carlo(closes)
         news = fetch_news(symbol)
         vgs_data = calc_vector_gradient_strength(closes, volumes)
-        
         vol_msg = "محايد"
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
-            if recent_vol > avg_vol * 1.2:
-                vol_msg = "مرتفع 📈"
-            elif recent_vol < avg_vol * 0.8:
-                vol_msg = "منخفض 📉"
-        
+            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع 📈"
+            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض 📉"
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -507,22 +424,13 @@ def unified_analysis(symbol):
         if rsi < 75: buy_signals += 1
         if mc['prob_profit'] > 55: buy_signals += 1
         if ou['z_score'] < 1.5: buy_signals += 1
-        if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05:
-            buy_signals += 1
-        
+        if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05: buy_signals += 1
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
-        
         recommendation = get_action_recommendation({
-            'vgs': vgs_data,
-            'rsi': rsi,
-            'kelly': kelly,
-            'mc': mc,
-            'direction': direction,
-            'buy_signals': buy_signals
+            'vgs': vgs_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc,
+            'direction': direction, 'buy_signals': buy_signals
         })
-        
         trade_type = recommendation.get('trade_type', 'WAIT')
-        
         if trade_type == 'LONG':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
@@ -538,32 +446,14 @@ def unified_analysis(symbol):
             tp1 = current_price + (atr * 2)
             tp2 = current_price - (atr * 2)
             tp3 = current_price + (atr * 3)
-        
         rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
-        
         return {
-            'symbol': symbol,
-            'price': current_price,
-            'rsi': rsi,
-            'ema20': ema20,
-            'ema50': ema50,
-            'macd': macd,
-            'atr': atr,
-            'ou': ou,
-            'kelly': kelly,
-            'mc': mc,
-            'vol_msg': vol_msg,
-            'direction': direction,
-            'sl': sl,
-            'tp1': tp1,
-            'tp2': tp2,
-            'tp3': tp3,
-            'rr': rr,
-            'news': news,
-            'buy_signals': buy_signals,
-            'vgs': vgs_data,
-            'recommendation': recommendation,
-            'trade_type': trade_type
+            'symbol': symbol, 'price': current_price, 'rsi': rsi,
+            'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
+            'ou': ou, 'kelly': kelly, 'mc': mc, 'vol_msg': vol_msg,
+            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+            'rr': rr, 'news': news, 'buy_signals': buy_signals,
+            'vgs': vgs_data, 'recommendation': recommendation, 'trade_type': trade_type
         }
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}")
@@ -589,7 +479,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 احتمال الربح: {data['mc']['prob_profit']:.1f}%
 حجم التداول: {data['vol_msg']}
 إشارات الشراء: {data['buy_signals']}/7
-معيار التدرج ‖∇f‖ (VGS): {vgs.get('vgs', 0):.3f}
+معيار التدرج ‖∇f (VGS): {vgs.get('vgs', 0):.3f}
 قوة الاتجاه: {vgs.get('strength', 'محايد')}
 اتجاه التدرج: {vgs.get('direction', 'محايد')}
 توصية الإجراء: {rec.get('action', 'انتظار')} (نقاط: {rec.get('score', 0)})
@@ -613,8 +503,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
         payload = {
             "model": "qwen/qwen-2.5-72b-instruct",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 1000
+            "temperature": 0.3, "max_tokens": 1000
         }
         res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=30)
         if res.status_code == 200:
@@ -628,24 +517,18 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 
 def send_unified_report(data, ai_analysis=None):
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
-    
-    if data['direction'] == 'شراء':
-        direction_display = 'شراء 🟢'
-    elif data['direction'] == 'بيع':
-        direction_display = 'بيع 🔴'
-    else:
-        direction_display = 'انتظار ⚪'
-    
+    if data['direction'] == 'شراء': direction_display = 'شراء 🟢'
+    elif data['direction'] == 'بيع': direction_display = 'بيع 🔴'
+    else: direction_display = 'انتظار ⚪'
     vgs = data.get('vgs', {})
     rec = data.get('recommendation', {})
-    
     part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
 📊 <b>الاتجاه:</b> {direction_display}
 
-📈 <b>التحليل الفني:</b>
+ <b>التحليل الفني:</b>
 • RSI: {data['rsi']:.1f}
 • MACD: {data['macd']:.2f}
 • EMA20: ${data['ema20']:,.2f}
@@ -653,11 +536,10 @@ def send_unified_report(data, ai_analysis=None):
 • ATR: ${data['atr']:,.2f}
 • حجم التداول: {data['vol_msg']}"""
     send_long_report(part1)
-    
     part2 = f"""🧮 <b>نموذج OU (العودة للمتوسط):</b>
 • Z-Score: {data['ou']['z_score']:.2f}
 
-💰 <b>Kelly Criterion:</b>
+ <b>Kelly Criterion:</b>
 • نسبة النجاح: {data['kelly']['win_rate']*100:.1f}%
 • الحجم الآمن: {data['kelly']['kelly_half']*100:.1f}%
 
@@ -666,7 +548,6 @@ def send_unified_report(data, ai_analysis=None):
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
-    
     part_vgs = f""" <b>قوة الاتجاه المتجهية (VGS):</b>
 📐 المعادلة: ‖∇f‖ = √((f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
@@ -680,38 +561,34 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
-    
-    part3 = f""" <b>آخر الأخبار:</b>
+    part3 = f"""📰 <b>آخر الأخبار:</b>
 {news_text}"""
     send_long_report(part3)
-    
     if ai_analysis:
         part4 = f"""{'='*45}
 🤖 <b>تحليل Qwen AI:</b>
 {'='*45}
 {ai_analysis}"""
         send_long_report(part4)
-    
     part5 = f"""{'='*45}
- <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
+💰 <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
 • الهدف 3 (TP3): ${data['tp3']:,.2f}
 • المخاطرة/العائد: 1:{data['rr']:.2f}"""
     send_long_report(part5)
-    
     part_rec = f"""{'='*45}
 🎯 <b>توصية الإجراء النهائية (فيوتشر/فوركس):</b>
 {'='*45}
 
-{rec.get('emoji', '')} <b>{rec.get('action', 'انتظار')}</b>
+{rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
 
 📋 <b>الوصف:</b> {rec.get('description', '')}
-📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
+ <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
 🔢 <b>نقاط التقييم:</b> {rec.get('score', 0)}
 
-💡 <i>هذه التوصية مبنية على دمج جميع المؤشرات: VGS، RSI، Kelly، مونت كارلو، وإشارات الشراء. مصممة لمتداولي Long و Short. ليست نصيحة مالية - تداول بمسؤوليتك.</i>"""
+ <i>هذه التوصية مبنية على دمج جميع المؤشرات: VGS، RSI، Kelly، مونت كارلو، وإشارات الشراء. مصممة لمتداولي Long و Short. ليست نصيحة مالية - تداول بمسؤوليتك.</i>"""
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
@@ -727,7 +604,7 @@ def smart_analysis(symbol):
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -740,8 +617,8 @@ def simple_report():
                     else:
                         report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
-                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
-            except Exception as e:
+                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
+            except:
                 report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
@@ -759,8 +636,7 @@ def handle_command(command):
         if len(parts) < 2:
             send_message("الاستخدام: /smart <رمز>\nمثال: /smart BTC-USD")
             return
-        symbol = parts[1].upper()
-        smart_analysis(symbol)
+        smart_analysis(parts[1].upper())
     elif cmd == '/help':
         send_message("<b>الأوامر:</b>\n/smart <رمز> - تحليل شامل\n/test_report - تقرير بسيط\n/help - مساعدة")
     else:
@@ -787,6 +663,6 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with NaN protection...")
+    logger.info("Starting Unified Trading Bot with balanced weights...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
