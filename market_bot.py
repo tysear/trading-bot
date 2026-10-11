@@ -1,6 +1,5 @@
 import requests
 import time
-import schedule
 import yfinance as yf
 from datetime import datetime
 import logging
@@ -20,8 +19,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 app = Flask(__name__)
 
@@ -65,7 +62,7 @@ def send_long_report(report):
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if i < total:
-            send_message(f"{part}\n\n⏳ يتبع... ({i}/{total})")
+            send_message(f"{part}\n\n يتبع... ({i}/{total})")
         else:
             send_message(f"{part}\n\n✅ انتهى التقرير ({i}/{total})")
         time.sleep(0.5)
@@ -254,12 +251,12 @@ def calc_vector_gradient_strength(closes, volumes):
         grad_P_w, grad_V_w, grad_R_w, grad_M_w = w1*grad_P, w2*grad_V, w3*grad_R, w4*grad_M
         vgs = np.sqrt(grad_P_w**2 + grad_V_w**2 + grad_R_w**2 + grad_M_w**2)
         direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
-        if vgs > 0.15: strength = 'قوي جداً '
+        if vgs > 0.15: strength = 'قوي جداً 🔥'
         elif vgs > 0.08: strength = 'قوي 💪'
-        elif vgs > 0.03: strength = 'متوسط ⚡'
-        else: strength = 'ضعيف 😴'
+        elif vgs > 0.03: strength = 'متوسط '
+        else: strength = 'ضعيف '
         if direction_score > 0.02: direction = 'صعودي 🟢'
-        elif direction_score < -0.02: direction = 'هبوطي '
+        elif direction_score < -0.02: direction = 'هبوطي 🔴'
         else: direction = 'محايد ⚪'
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength,
                 'grad_P': float(grad_P), 'grad_V': float(grad_V),
@@ -279,43 +276,29 @@ def get_action_recommendation(data):
         mc_prob = data.get('mc', {}).get('prob_profit', 50)
         direction = data.get('direction', 'انتظار')
         buy_signals = data.get('buy_signals', 0)
-        
         score = 0
-        
-        if direction == 'شراء':
-            score += 5
-        elif direction == 'بيع':
-            score -= 5
-        
-        if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08:
-            score += 2
-        elif vgs_direction == 'صعودي 🟢':
-            score += 1
-        elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08:
-            score -= 2
-        elif vgs_direction == 'هبوطي 🔴':
-            score -= 1
-        
+        if direction == 'شراء': score += 5
+        elif direction == 'بيع': score -= 5
+        if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08: score += 2
+        elif vgs_direction == 'صعودي 🟢': score += 1
+        elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08: score -= 2
+        elif vgs_direction == 'هبوطي 🔴': score -= 1
         if rsi < 30: score += 1
         elif rsi < 40: score += 0.5
         elif rsi > 70: score -= 1
         elif rsi > 60: score -= 0.5
-        
         if kelly > 0.15: score += 1 if score > 0 else -1
         elif kelly < 0.05: score -= 0.5 if score > 0 else 0.5
-        
         if mc_prob > 65: score += 1
         elif mc_prob < 35: score -= 1
-        
         if buy_signals >= 6: score += 1
         elif buy_signals <= 2: score -= 1
-        
         if score >= 6:
             return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '🟢', 'trade_type': 'LONG',
                     'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
         elif score >= 3:
-            return {'action': 'افتح شراء (Long) 🟢', 'emoji': '', 'trade_type': 'LONG',
+            return {'action': 'افتح شراء (Long) ', 'emoji': '🟢', 'trade_type': 'LONG',
                     'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
                     'confidence': 'عالية', 'score': score}
         elif score >= 1:
@@ -331,16 +314,16 @@ def get_action_recommendation(data):
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
-            return {'action': 'افتح بيع (Short) ', 'emoji': '🟠', 'trade_type': 'SHORT',
+            return {'action': 'افتح بيع (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
                     'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع.',
                     'confidence': 'عالية', 'score': score}
         else:
-            return {'action': 'افتح بيع (Short) قوي ', 'emoji': '🔴', 'trade_type': 'SHORT',
+            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '🔴', 'trade_type': 'SHORT',
                     'description': 'انهيار أو زخم هبوطي قوي جداً. فرصة Short ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
-        return {'action': 'انتظار ', 'emoji': '⚪', 'trade_type': 'WAIT',
+        return {'action': 'انتظار ⚪', 'emoji': '⚪', 'trade_type': 'WAIT',
                 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
 
 def unified_analysis(symbol):
@@ -414,7 +397,7 @@ def unified_analysis(symbol):
         return None
 
 def ask_qwen(data):
-    """تحليل Qwen AI عبر OpenRouter"""
+    """تحليل Qwen AI - النموذج الأقوى"""
     if not OPENROUTER_API_KEY:
         return None
     try:
@@ -460,7 +443,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3, "max_tokens": 1000
         }
-        res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=30)
+        res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=45)
         if res.status_code == 200:
             result = res.json()
             if 'choices' in result and len(result['choices']) > 0:
@@ -470,75 +453,18 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
         logger.error(f"Qwen error: {e}")
         return None
 
-def ask_groq(data):
-    """تحليل Groq AI (Llama 3.1 70B) - مجاني 100% بدون بطاقة ائتمان"""
-    if not GROQ_API_KEY:
-        return None
-    try:
-        news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
-        vgs = data.get('vgs', {})
-        rec = data.get('recommendation', {})
-        prompt = f"""أنت محلل مالي خبير متخصص في الفيوتشر والفوركس. حلل البيانات التالية بالعربية:
-
-الرمز: {data['symbol']}
-السعر: ${data['price']:,.2f}
-RSI: {data['rsi']:.1f}
-EMA20: ${data['ema20']:,.2f} | EMA50: ${data['ema50']:,.2f}
-MACD: {data['macd']:.2f}
-ATR: ${data['atr']:,.2f}
-OU Z-Score: {data['ou']['z_score']:.2f}
-Kelly: {data['kelly']['kelly_half']*100:.1f}%
-احتمال الربح: {data['mc']['prob_profit']:.1f}%
-حجم التداول: {data['vol_msg']}
-إشارات الشراء: {data['buy_signals']}/7
-معيار التدرج ‖∇f‖ (VGS): {vgs.get('vgs', 0):.3f}
-قوة الاتجاه: {vgs.get('strength', 'محايد')}
-اتجاه التدرج: {vgs.get('direction', 'محايد')}
-توصية الإجراء: {rec.get('action', 'انتظار')} (نقاط: {rec.get('score', 0)})
-
-الأخبار:
-{news_text}
-
-أعطِ:
-1. القرار: (Long قوي/Long/انتظار/Short/Short قوي)
-2. التفسير المختصر
-3. المخاطر الرئيسية
-4. نصيحة عملية لمتداول فيوتشر
-
-⚠️ ليس نصيحة مالية."""
-        
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "llama-3.1-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 1000
-        }
-        res = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
-        if res.status_code == 200:
-            result = res.json()
-            if 'choices' in result and len(result['choices']) > 0:
-                return result['choices'][0]['message']['content']
-        return None
-    except Exception as e:
-        logger.error(f"Groq error: {e}")
-        return None
-
-def send_unified_report(data, qwen_analysis=None, groq_analysis=None):
+def send_unified_report(data, ai_analysis=None):
     news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
-    if data['direction'] == 'شراء': direction_display = 'شراء '
+    if data['direction'] == 'شراء': direction_display = 'شراء 🟢'
     elif data['direction'] == 'بيع': direction_display = 'بيع 🔴'
-    else: direction_display = 'انتظار ⚪'
+    else: direction_display = 'انتظار '
     vgs = data.get('vgs', {})
     rec = data.get('recommendation', {})
     part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
- <b>السعر الحالي:</b> ${data['price']:,.2f}
-📊 <b>الاتجاه:</b> {direction_display}
+💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
+ <b>الاتجاه:</b> {direction_display}
 
 📈 <b>التحليل الفني:</b>
 • RSI: {data['rsi']:.1f}
@@ -548,14 +474,14 @@ def send_unified_report(data, qwen_analysis=None, groq_analysis=None):
 • ATR: ${data['atr']:,.2f}
 • حجم التداول: {data['vol_msg']}"""
     send_long_report(part1)
-    part2 = f""" <b>نموذج OU (العودة للمتوسط):</b>
+    part2 = f"""🧮 <b>نموذج OU (العودة للمتوسط):</b>
 • Z-Score: {data['ou']['z_score']:.2f}
 
 💰 <b>Kelly Criterion:</b>
 • نسبة النجاح: {data['kelly']['win_rate']*100:.1f}%
 • الحجم الآمن: {data['kelly']['kelly_half']*100:.1f}%
 
-🎲 <b>مونت كارلو (30 يوم):</b>
+ <b>مونت كارلو (30 يوم):</b>
 • احتمال الربح: {data['mc']['prob_profit']:.1f}%
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
@@ -566,35 +492,24 @@ def send_unified_report(data, qwen_analysis=None, groq_analysis=None):
 • معيار التدرج ‖∇f: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
 • اتجاه التدرج: {vgs.get('direction', 'محايد')}
-• ∂f/P (السعر): {vgs.get('grad_P', 0):.3f}
-• f/∂V (الحجم): {vgs.get('grad_V', 0):.3f}
+• ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
+• ∂f/∂V (الحجم): {vgs.get('grad_V', 0):.3f}
 • ∂f/∂R (RSI): {vgs.get('grad_R', 0):.3f}
-• ∂f/M (MACD): {vgs.get('grad_M', 0):.3f}
+• ∂f/∂M (MACD): {vgs.get('grad_M', 0):.3f}
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
     part3 = f"""📰 <b>آخر الأخبار:</b>
 {news_text}"""
     send_long_report(part3)
-    
-    # ✅ تحليل Qwen AI
-    if qwen_analysis:
-        part_qwen = f"""{'='*45}
-🤖 <b>تحليل Qwen AI:</b>
+    if ai_analysis:
+        part_ai = f"""{'='*45}
+🤖 <b>تحليل Qwen AI (خبير مالي):</b>
 {'='*45}
-{qwen_analysis}"""
-        send_long_report(part_qwen)
-    
-    # ✅ تحليل Groq AI (Llama 3.1 70B)
-    if groq_analysis:
-        part_groq = f"""{'='*45}
- <b>تحليل Groq AI (Llama 3.1 70B):</b>
-{'='*45}
-{groq_analysis}"""
-        send_long_report(part_groq)
-    
+{ai_analysis}"""
+        send_long_report(part_ai)
     part5 = f"""{'='*45}
-💰 <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
+ <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -605,9 +520,9 @@ def send_unified_report(data, qwen_analysis=None, groq_analysis=None):
 🎯 <b>توصية الإجراء النهائية (فيوتشر/فوركس):</b>
 {'='*45}
 
-{rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
+{rec.get('emoji', '')} <b>{rec.get('action', 'انتظار')}</b>
 
- <b>الوصف:</b> {rec.get('description', '')}
+📋 <b>الوصف:</b> {rec.get('description', '')}
 📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
 🔢 <b>نقاط التقييم:</b> {rec.get('score', 0)}
 
@@ -615,38 +530,20 @@ def send_unified_report(data, qwen_analysis=None, groq_analysis=None):
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
-    send_message(f" جاري التحليل الشامل لـ {symbol}...")
+    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
-    
-    # ✅ جمع تحليلات الذكاء الاصطناعي
-    qwen = None
-    groq = None
-    
-    # Qwen AI
     if OPENROUTER_API_KEY:
-        send_message("🤖 جاري تحليل Qwen AI...")
-        qwen = ask_qwen(data)
-        if not qwen:
-            send_message("⚠️ فشل تحليل Qwen AI")
+        send_message("🤖 جاري تحليل Qwen AI (الخبير المالي)...")
+        ai = ask_qwen(data)
+        if not ai:
+            send_message("⚠️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
     else:
         send_message("⚠️ مفتاح Qwen غير موجود")
-    
-    # Groq AI (مجاني 100%)
-    if GROQ_API_KEY:
-        send_message("🦙 جاري تحليل Groq AI (Llama 3.1)...")
-        groq = ask_groq(data)
-        if not groq:
-            send_message("⚠️ فشل تحليل Groq AI")
-    else:
-        send_message("⚠️ مفتاح Groq غير موجود - احصل عليه مجاناً من console.groq.com")
-    
-    if not qwen and not groq:
-        send_message("️ لا توجد مفاتيح AI متاحة. سيتم عرض التقرير بدون تحليل ذكي.")
-    
-    send_unified_report(data, qwen, groq)
+        ai = None
+    send_unified_report(data, ai)
 
 def simple_report():
     try:
@@ -710,6 +607,6 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with Dual AI (Qwen + Groq)...")
+    logger.info("Starting Unified Trading Bot with Qwen AI...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
