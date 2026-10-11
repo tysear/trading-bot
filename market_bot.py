@@ -19,6 +19,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
 app = Flask(__name__)
 
@@ -62,7 +64,7 @@ def send_long_report(report):
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if i < total:
-            send_message(f"{part}\n\n يتبع... ({i}/{total})")
+            send_message(f"{part}\n\n⏳ يتبع... ({i}/{total})")
         else:
             send_message(f"{part}\n\n✅ انتهى التقرير ({i}/{total})")
         time.sleep(0.5)
@@ -98,7 +100,66 @@ def fetch_data(symbol):
         logger.error(f"Fetch error {symbol}: {e}")
         return None
 
+def fetch_finnhub_news(symbol):
+    """جلب الأخبار من Finnhub - مصدر أخبار قوي جداً"""
+    if not FINNHUB_API_KEY:
+        return None
+    
+    try:
+        # تحويل الرمز إلى صيغة Finnhub
+        finnhub_symbol = symbol
+        if symbol.endswith('-USD'):
+            finnhub_symbol = 'BINANCE:' + symbol.replace('-USD', '')
+        elif symbol == 'GC=F':
+            finnhub_symbol = 'GC=F'
+        
+        # جلب أخبار عامة (فيدرالي، سياسة، اقتصاد)
+        general_news_url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
+        general_resp = requests.get(general_news_url, timeout=10)
+        
+        # جلب أخبار الشركة المحددة
+        company_news_url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={int(time.time())-86400}&to={int(time.time())}&token={FINNHUB_API_KEY}"
+        company_resp = requests.get(company_news_url, timeout=10)
+        
+        news_list = []
+        
+        # إضافة الأخبار العامة (فيدرالي، سياسة)
+        if general_resp.status_code == 200:
+            general_news = general_resp.json()[:5]  # آخر 5 أخبار
+            for item in general_news:
+                headline = item.get('headline', '')
+                source = item.get('source', '')
+                url = item.get('url', '')
+                if headline and any(keyword in headline.lower() for keyword in 
+                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate']):
+                    news_list.append(f"🌍 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
+        
+        # إضافة أخبار الشركة
+        if company_resp.status_code == 200:
+            company_news = company_resp.json()[:3]  # آخر 3 أخبار
+            for item in company_news:
+                headline = item.get('headline', '')
+                source = item.get('source', '')
+                if headline:
+                    news_list.append(f"📊 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
+        
+        if len(news_list) == 0:
+            return ["لا توجد أخبار مهمة حالياً."]
+        
+        return news_list[:8]  # حد أقصى 8 أخبار
+        
+    except Exception as e:
+        logger.error(f"Finnhub news error: {e}")
+        return None
+
 def fetch_news(symbol):
+    """جلب الأخبار - يحاول Finnhub أولاً، ثم Yahoo"""
+    # محاولة Finnhub أولاً
+    finnhub_news = fetch_finnhub_news(symbol)
+    if finnhub_news:
+        return finnhub_news
+    
+    # إذا فشل Finnhub، استخدم Yahoo
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news
@@ -253,8 +314,8 @@ def calc_vector_gradient_strength(closes, volumes):
         direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
         if vgs > 0.15: strength = 'قوي جداً 🔥'
         elif vgs > 0.08: strength = 'قوي 💪'
-        elif vgs > 0.03: strength = 'متوسط '
-        else: strength = 'ضعيف '
+        elif vgs > 0.03: strength = 'متوسط ⚡'
+        else: strength = 'ضعيف 😴'
         if direction_score > 0.02: direction = 'صعودي 🟢'
         elif direction_score < -0.02: direction = 'هبوطي 🔴'
         else: direction = 'محايد ⚪'
@@ -298,7 +359,7 @@ def get_action_recommendation(data):
                     'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
         elif score >= 3:
-            return {'action': 'افتح شراء (Long) ', 'emoji': '🟢', 'trade_type': 'LONG',
+            return {'action': 'افتح شراء (Long) 🟢', 'emoji': '', 'trade_type': 'LONG',
                     'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
                     'confidence': 'عالية', 'score': score}
         elif score >= 1:
@@ -310,7 +371,7 @@ def get_action_recommendation(data):
                     'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                     'confidence': 'منخفضة', 'score': score}
         elif score >= -3:
-            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
+            return {'action': 'دخول حذر (Short) ', 'emoji': '🟠', 'trade_type': 'SHORT',
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
@@ -397,7 +458,6 @@ def unified_analysis(symbol):
         return None
 
 def ask_qwen(data):
-    """تحليل Qwen AI - النموذج الأقوى"""
     if not OPENROUTER_API_KEY:
         return None
     try:
@@ -431,7 +491,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 3. المخاطر الرئيسية
 4. نصيحة عملية لمتداول فيوتشر
 
-️ ليس نصيحة مالية."""
+⚠️ ليس نصيحة مالية."""
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -454,17 +514,17 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
         return None
 
 def send_unified_report(data, ai_analysis=None):
-    news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
+    news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
     if data['direction'] == 'شراء': direction_display = 'شراء 🟢'
     elif data['direction'] == 'بيع': direction_display = 'بيع 🔴'
-    else: direction_display = 'انتظار '
+    else: direction_display = 'انتظار ⚪'
     vgs = data.get('vgs', {})
     rec = data.get('recommendation', {})
     part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
- <b>الاتجاه:</b> {direction_display}
+📊 <b>الاتجاه:</b> {direction_display}
 
 📈 <b>التحليل الفني:</b>
 • RSI: {data['rsi']:.1f}
@@ -481,15 +541,15 @@ def send_unified_report(data, ai_analysis=None):
 • نسبة النجاح: {data['kelly']['win_rate']*100:.1f}%
 • الحجم الآمن: {data['kelly']['kelly_half']*100:.1f}%
 
- <b>مونت كارلو (30 يوم):</b>
+🎲 <b>مونت كارلو (30 يوم):</b>
 • احتمال الربح: {data['mc']['prob_profit']:.1f}%
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
     part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
- المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+📐 المعادلة: ‖∇f‖ = √((∂f/P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
-• معيار التدرج ‖∇f: {vgs.get('vgs', 0):.3f}
+• معيار التدرج ‖f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
 • اتجاه التدرج: {vgs.get('direction', 'محايد')}
 • ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
@@ -499,7 +559,7 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
-    part3 = f"""📰 <b>آخر الأخبار:</b>
+    part3 = f"""📰 <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
 {news_text}"""
     send_long_report(part3)
     if ai_analysis:
@@ -548,7 +608,7 @@ def smart_analysis(symbol):
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -559,7 +619,7 @@ def simple_report():
                     if not np.isnan(price) and price > 0:
                         report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                     else:
-                        report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
+                        report += f"️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
                     report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
             except:
@@ -571,9 +631,9 @@ def simple_report():
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message("🤖 <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
+        send_message(" <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
     elif cmd == '/test_report':
-        send_message(" جاري...")
+        send_message("⏳ جاري...")
         simple_report()
     elif cmd.startswith('/smart'):
         parts = command.split()
@@ -607,6 +667,6 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with Qwen AI...")
+    logger.info("Starting Unified Trading Bot with Finnhub News + Qwen AI...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
