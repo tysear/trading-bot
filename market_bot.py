@@ -101,65 +101,43 @@ def fetch_data(symbol):
         return None
 
 def fetch_finnhub_news(symbol):
-    """جلب الأخبار من Finnhub - مصدر أخبار قوي جداً"""
     if not FINNHUB_API_KEY:
         return None
-    
     try:
-        # تحويل الرمز إلى صيغة Finnhub
+        general_news_url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
+        general_resp = requests.get(general_news_url, timeout=10)
         finnhub_symbol = symbol
         if symbol.endswith('-USD'):
             finnhub_symbol = 'BINANCE:' + symbol.replace('-USD', '')
-        elif symbol == 'GC=F':
-            finnhub_symbol = 'GC=F'
-        
-        # جلب أخبار عامة (فيدرالي، سياسة، اقتصاد)
-        general_news_url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
-        general_resp = requests.get(general_news_url, timeout=10)
-        
-        # جلب أخبار الشركة المحددة
         company_news_url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={int(time.time())-86400}&to={int(time.time())}&token={FINNHUB_API_KEY}"
         company_resp = requests.get(company_news_url, timeout=10)
-        
         news_list = []
-        
-        # إضافة الأخبار العامة (فيدرالي، سياسة)
         if general_resp.status_code == 200:
-            general_news = general_resp.json()[:5]  # آخر 5 أخبار
+            general_news = general_resp.json()[:5]
             for item in general_news:
                 headline = item.get('headline', '')
                 source = item.get('source', '')
-                url = item.get('url', '')
                 if headline and any(keyword in headline.lower() for keyword in 
-                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate']):
+                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate', 'crypto', 'bitcoin', 'sec']):
                     news_list.append(f"🌍 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
-        
-        # إضافة أخبار الشركة
         if company_resp.status_code == 200:
-            company_news = company_resp.json()[:3]  # آخر 3 أخبار
+            company_news = company_resp.json()[:3]
             for item in company_news:
                 headline = item.get('headline', '')
                 source = item.get('source', '')
                 if headline:
-                    news_list.append(f"📊 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
-        
+                    news_list.append(f" <b>{headline}</b>\n   <i>المصدر: {source}</i>")
         if len(news_list) == 0:
             return ["لا توجد أخبار مهمة حالياً."]
-        
-        return news_list[:8]  # حد أقصى 8 أخبار
-        
+        return news_list[:8]
     except Exception as e:
         logger.error(f"Finnhub news error: {e}")
         return None
 
 def fetch_news(symbol):
-    """جلب الأخبار - يحاول Finnhub أولاً، ثم Yahoo"""
-    # محاولة Finnhub أولاً
     finnhub_news = fetch_finnhub_news(symbol)
     if finnhub_news:
         return finnhub_news
-    
-    # إذا فشل Finnhub، استخدم Yahoo
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news
@@ -341,7 +319,7 @@ def get_action_recommendation(data):
         if direction == 'شراء': score += 5
         elif direction == 'بيع': score -= 5
         if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08: score += 2
-        elif vgs_direction == 'صعودي 🟢': score += 1
+        elif vgs_direction == 'صعودي ': score += 1
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08: score -= 2
         elif vgs_direction == 'هبوطي 🔴': score -= 1
         if rsi < 30: score += 1
@@ -359,7 +337,7 @@ def get_action_recommendation(data):
                     'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
         elif score >= 3:
-            return {'action': 'افتح شراء (Long) 🟢', 'emoji': '', 'trade_type': 'LONG',
+            return {'action': 'افتح شراء (Long) 🟢', 'emoji': '🟢', 'trade_type': 'LONG',
                     'description': 'مؤشرات إيجابية. يمكن الدخول بحجم موقع موصى به من Kelly.',
                     'confidence': 'عالية', 'score': score}
         elif score >= 1:
@@ -371,7 +349,7 @@ def get_action_recommendation(data):
                     'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                     'confidence': 'منخفضة', 'score': score}
         elif score >= -3:
-            return {'action': 'دخول حذر (Short) ', 'emoji': '🟠', 'trade_type': 'SHORT',
+            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
@@ -379,7 +357,7 @@ def get_action_recommendation(data):
                     'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع.',
                     'confidence': 'عالية', 'score': score}
         else:
-            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '🔴', 'trade_type': 'SHORT',
+            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '', 'trade_type': 'SHORT',
                     'description': 'انهيار أو زخم هبوطي قوي جداً. فرصة Short ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
     except Exception as e:
@@ -413,8 +391,8 @@ def unified_analysis(symbol):
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
-            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع 📈"
-            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض 📉"
+            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع "
+            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض "
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -422,28 +400,37 @@ def unified_analysis(symbol):
         if rsi < 75: buy_signals += 1
         if mc['prob_profit'] > 55: buy_signals += 1
         if ou['z_score'] < 1.5: buy_signals += 1
-        if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05: buy_signals += 1
+        if vgs_data['direction'] == 'صعودي ' and vgs_data['vgs'] > 0.05: buy_signals += 1
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
         recommendation = get_action_recommendation({
             'vgs': vgs_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc,
             'direction': direction, 'buy_signals': buy_signals
         })
         trade_type = recommendation.get('trade_type', 'WAIT')
-        if trade_type == 'LONG':
+        
+        # ✅ إصلاح: استخدام direction (شراء/بيع) لتحديد المستويات بشكل منطقي
+        if direction == 'شراء':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
             tp2 = current_price + (atr * 3)
             tp3 = current_price + (atr * 4.5)
-        elif trade_type == 'SHORT':
+        elif direction == 'بيع':
             sl = current_price + (atr * 1.5)
             tp1 = current_price - (atr * 2)
             tp2 = current_price - (atr * 3)
             tp3 = current_price - (atr * 4.5)
-        else:
-            sl = current_price - (atr * 1.5)
-            tp1 = current_price + (atr * 2)
-            tp2 = current_price - (atr * 2)
-            tp3 = current_price + (atr * 3)
+        else:  # انتظار - استخدم VGS لتحديد الاتجاه
+            if vgs_data['direction'] == 'هبوطي 🔴':
+                sl = current_price + (atr * 1.5)
+                tp1 = current_price - (atr * 2)
+                tp2 = current_price - (atr * 3)
+                tp3 = current_price - (atr * 4.5)
+            else:
+                sl = current_price - (atr * 1.5)
+                tp1 = current_price + (atr * 2)
+                tp2 = current_price + (atr * 3)
+                tp3 = current_price + (atr * 4.5)
+        
         rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         return {
             'symbol': symbol, 'price': current_price, 'rsi': rsi,
@@ -520,7 +507,7 @@ def send_unified_report(data, ai_analysis=None):
     else: direction_display = 'انتظار ⚪'
     vgs = data.get('vgs', {})
     rec = data.get('recommendation', {})
-    part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+    part1 = f""" <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
@@ -546,10 +533,10 @@ def send_unified_report(data, ai_analysis=None):
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
-    part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ‖∇f‖ = √((∂f/P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+    part_vgs = f""" <b>قوة الاتجاه المتجهية (VGS):</b>
+📐 المعادلة: ‖∇f‖ = √((∂f/∂P)² + (f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
-• معيار التدرج ‖f‖: {vgs.get('vgs', 0):.3f}
+• معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
 • اتجاه التدرج: {vgs.get('direction', 'محايد')}
 • ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
@@ -559,7 +546,7 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
-    part3 = f"""📰 <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
+    part3 = f""" <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
 {news_text}"""
     send_long_report(part3)
     if ai_analysis:
@@ -569,7 +556,7 @@ def send_unified_report(data, ai_analysis=None):
 {ai_analysis}"""
         send_long_report(part_ai)
     part5 = f"""{'='*45}
- <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
+💰 <b>مستويات التداول ({rec.get('action', 'انتظار')}):</b>
 • وقف الخسارة (SL): ${data['sl']:,.2f}
 • الهدف 1 (TP1): ${data['tp1']:,.2f}
 • الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -596,10 +583,10 @@ def smart_analysis(symbol):
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     if OPENROUTER_API_KEY:
-        send_message("🤖 جاري تحليل Qwen AI (الخبير المالي)...")
+        send_message(" جاري تحليل Qwen AI (الخبير المالي)...")
         ai = ask_qwen(data)
         if not ai:
-            send_message("⚠️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
+            send_message("️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
     else:
         send_message("⚠️ مفتاح Qwen غير موجود")
         ai = None
@@ -619,11 +606,11 @@ def simple_report():
                     if not np.isnan(price) and price > 0:
                         report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                     else:
-                        report += f"️ <b>{symbol}</b>: بيانات غير متاحة\n"
+                        report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
-                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
             except:
-                report += f"❌ <b>{symbol}</b>: خطأ\n"
+                report += f" <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
         send_message(f"خطأ: {str(e)}")
@@ -631,7 +618,7 @@ def simple_report():
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message(" <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
+        send_message("🤖 <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
     elif cmd == '/test_report':
         send_message("⏳ جاري...")
         simple_report()
