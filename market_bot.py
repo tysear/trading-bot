@@ -118,7 +118,7 @@ def fetch_finnhub_news(symbol):
                 headline = item.get('headline', '')
                 source = item.get('source', '')
                 if headline and any(keyword in headline.lower() for keyword in 
-                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate', 'crypto', 'bitcoin', 'sec']):
+                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate', 'crypto', 'bitcoin', 'sec', 'gold']):
                     news_list.append(f"🌍 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
         if company_resp.status_code == 200:
             company_news = company_resp.json()[:3]
@@ -126,7 +126,7 @@ def fetch_finnhub_news(symbol):
                 headline = item.get('headline', '')
                 source = item.get('source', '')
                 if headline:
-                    news_list.append(f" <b>{headline}</b>\n   <i>المصدر: {source}</i>")
+                    news_list.append(f"📊 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
         if len(news_list) == 0:
             return ["لا توجد أخبار مهمة حالياً."]
         return news_list[:8]
@@ -321,7 +321,7 @@ def get_action_recommendation(data):
         if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08: score += 2
         elif vgs_direction == 'صعودي ': score += 1
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08: score -= 2
-        elif vgs_direction == 'هبوطي 🔴': score -= 1
+        elif vgs_direction == 'هبوطي ': score -= 1
         if rsi < 30: score += 1
         elif rsi < 40: score += 0.5
         elif rsi > 70: score -= 1
@@ -333,7 +333,7 @@ def get_action_recommendation(data):
         if buy_signals >= 6: score += 1
         elif buy_signals <= 2: score -= 1
         if score >= 6:
-            return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '🟢', 'trade_type': 'LONG',
+            return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '', 'trade_type': 'LONG',
                     'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
         elif score >= 3:
@@ -349,7 +349,7 @@ def get_action_recommendation(data):
                     'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                     'confidence': 'منخفضة', 'score': score}
         elif score >= -3:
-            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
+            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '', 'trade_type': 'SHORT',
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
@@ -408,7 +408,6 @@ def unified_analysis(symbol):
         })
         trade_type = recommendation.get('trade_type', 'WAIT')
         
-        # ✅ إصلاح: استخدام direction (شراء/بيع) لتحديد المستويات بشكل منطقي
         if direction == 'شراء':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
@@ -419,7 +418,7 @@ def unified_analysis(symbol):
             tp1 = current_price - (atr * 2)
             tp2 = current_price - (atr * 3)
             tp3 = current_price - (atr * 4.5)
-        else:  # انتظار - استخدم VGS لتحديد الاتجاه
+        else:
             if vgs_data['direction'] == 'هبوطي 🔴':
                 sl = current_price + (atr * 1.5)
                 tp1 = current_price - (atr * 2)
@@ -507,7 +506,7 @@ def send_unified_report(data, ai_analysis=None):
     else: direction_display = 'انتظار ⚪'
     vgs = data.get('vgs', {})
     rec = data.get('recommendation', {})
-    part1 = f""" <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+    part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
@@ -533,8 +532,8 @@ def send_unified_report(data, ai_analysis=None):
 • احتمال خسارة 10%+: {data['mc']['prob_loss_10']:.1f}%
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
-    part_vgs = f""" <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ‖∇f‖ = √((∂f/∂P)² + (f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+    part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
+📐 المعادلة: ∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/M)²)
 
 • معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
@@ -546,7 +545,7 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
-    part3 = f""" <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
+    part3 = f"""📰 <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
 {news_text}"""
     send_long_report(part3)
     if ai_analysis:
@@ -567,7 +566,7 @@ def send_unified_report(data, ai_analysis=None):
 🎯 <b>توصية الإجراء النهائية (فيوتشر/فوركس):</b>
 {'='*45}
 
-{rec.get('emoji', '')} <b>{rec.get('action', 'انتظار')}</b>
+{rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
 
 📋 <b>الوصف:</b> {rec.get('description', '')}
 📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
@@ -577,25 +576,25 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
-    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
+    send_message(f" جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
-        send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
+        send_message(f" فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     if OPENROUTER_API_KEY:
-        send_message(" جاري تحليل Qwen AI (الخبير المالي)...")
+        send_message("🤖 جاري تحليل Qwen AI (الخبير المالي)...")
         ai = ask_qwen(data)
         if not ai:
-            send_message("️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
+            send_message("⚠️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
     else:
-        send_message("⚠️ مفتاح Qwen غير موجود")
+        send_message("️ مفتاح Qwen غير موجود")
         ai = None
     send_unified_report(data, ai)
 
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -608,9 +607,9 @@ def simple_report():
                     else:
                         report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
-                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
             except:
-                report += f" <b>{symbol}</b>: خطأ\n"
+                report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
         send_message(f"خطأ: {str(e)}")
@@ -620,14 +619,18 @@ def handle_command(command):
     if cmd == '/start':
         send_message("🤖 <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
     elif cmd == '/test_report':
-        send_message("⏳ جاري...")
+        send_message(" جاري...")
         simple_report()
     elif cmd.startswith('/smart'):
-        parts = command.split()
+        # ✅ إصلاح: استخدام split(' ', 1) للحفاظ على الرموز التي تحتوي على =
+        parts = command.split(' ', 1)
         if len(parts) < 2:
-            send_message("الاستخدام: /smart <رمز>\nمثال: /smart BTC-USD")
+            send_message("الاستخدام: /smart <رمز>\nمثال: /smart GC=F\nمثال: /smart XAUUSD=X\nمثال: /smart BTC-USD")
             return
-        smart_analysis(parts[1].upper())
+        symbol = parts[1].strip().upper()
+        # ✅ إزالة أي مسافات داخلية من الرمز
+        symbol = symbol.replace(' ', '')
+        smart_analysis(symbol)
     elif cmd == '/help':
         send_message("<b>الأوامر:</b>\n/smart <رمز> - تحليل شامل\n/test_report - تقرير بسيط\n/help - مساعدة")
     else:
