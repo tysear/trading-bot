@@ -22,7 +22,6 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
-# ملف لتخزين الأخبار التي تم التنبيه عنها لتجنب التكرار
 ALERTED_NEWS_FILE = 'alerted_news.txt'
 URGENT_KEYWORDS = ['federal reserve', 'fed rate', 'inflation', 'cpi', 'jerome powell', 
                    'interest rate', 'recession', 'nonfarm payrolls', 'nfp', 'fomc', 'treasury']
@@ -91,33 +90,28 @@ def save_alerted_news(headline):
         pass
 
 def monitor_urgent_news():
-    """خلفية مراقبة الأخبار العاجلة كل 30 دقيقة"""
     logger.info("Starting Urgent News Monitor...")
     while True:
         try:
-            time.sleep(1800)  # الانتظار 30 دقيقة
+            time.sleep(1800)
             if not FINNHUB_API_KEY:
                 continue
-            
             url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 news_list = resp.json()[:10]
                 alerted = load_alerted_news()
-                
                 for item in news_list:
                     headline = item.get('headline', '').lower()
                     source = item.get('source', '')
                     original_headline = item.get('headline', '')
                     url_news = item.get('url', '')
-                    
-                    # التحقق من الكلمات المفتاحية الحرجة
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         if original_headline not in alerted:
                             alert_msg = (
                                 f"🚨 <b>تنبيه عاجل: خبر اقتصادي مؤثر!</b>\n\n"
                                 f"📰 <b>{original_headline}</b>\n"
-                                f"📡 المصدر: {source}\n"
+                                f" المصدر: {source}\n"
                                 f"🔗 <a href='{url_news}'>رابط الخبر</a>\n\n"
                                 f"💡 <i>يُنصح بمراجعة السوق فوراً. يمكنك استخدام /smart لفحص الأصول.</i>"
                             )
@@ -350,7 +344,7 @@ def calc_vector_gradient_strength(closes, volumes):
         direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
         if vgs > 0.15: strength = 'قوي جداً 🔥'
         elif vgs > 0.08: strength = 'قوي 💪'
-        elif vgs > 0.03: strength = 'متوسط ⚡'
+        elif vgs > 0.03: strength = 'متوسط '
         else: strength = 'ضعيف 😴'
         if direction_score > 0.02: direction = 'صعودي 🟢'
         elif direction_score < -0.02: direction = 'هبوطي 🔴'
@@ -363,11 +357,112 @@ def calc_vector_gradient_strength(closes, volumes):
         return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ',
                 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
+def calc_vector_flow_model(closes, volumes):
+    """
+    نموذج التدفق المتجهي (Vector Flow Model - VFM)
+    يحسب: التباعد (Divergence ∇·F)، الالتواء (Curl |∇×F|)، التدفق (Flux Φ)
+    """
+    try:
+        if len(closes) < 20:
+            return {
+                'divergence': 0, 'curl': 0, 'flux': 0,
+                'signal': 'محايد', 'strength': 'ضعيف'
+            }
+        
+        prices = np.array(closes, dtype=float)
+        vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
+        
+        # تنظيف البيانات
+        valid_mask = ~(np.isnan(prices) | np.isnan(vols))
+        prices = prices[valid_mask]
+        vols = vols[valid_mask]
+        
+        if len(prices) < 20:
+            return {
+                'divergence': 0, 'curl': 0, 'flux': 0,
+                'signal': 'محايد', 'strength': 'ضعيف'
+            }
+        
+        # حساب متجه تدفق الأموال F = (F_price, F_volume, F_momentum)
+        # F_price: تغير السعر النسبي
+        price_changes = np.diff(prices) / (prices[:-1] + 1e-10)
+        # F_volume: تغير الحجم النسبي
+        vol_changes = np.diff(vols) / (vols[:-1] + 1e-10)
+        # F_momentum: الزخم (مشتق السعر)
+        momentum = np.gradient(prices)
+        
+        # 1️ التباعد (Divergence): ∇ · F
+        # يقيس إذا كانت الأموال تدخل أم تخرج
+        divergence_values = []
+        for i in range(-10, -1):
+            if i-1 >= -len(price_changes):
+                div_p = (price_changes[i] - price_changes[i-1]) / (abs(price_changes[i-1]) + 1e-10)
+                div_v = (vol_changes[i] - vol_changes[i-1]) / (abs(vol_changes[i-1]) + 1e-10)
+                div_m = (momentum[i] - momentum[i-1]) / (abs(momentum[i-1]) + 1e-10)
+                divergence_values.append((div_p + div_v + div_m) / 3)
+        
+        divergence = np.mean(divergence_values) if divergence_values else 0.0
+        
+        # 2️⃣ الالتواء (Curl): |∇ × F|
+        # يقيس الدوامات والتقلبات
+        curl_values = []
+        for i in range(-10, -1):
+            if i-1 >= -len(price_changes):
+                div_p = (price_changes[i] - price_changes[i-1]) / (abs(price_changes[i-1]) + 1e-10)
+                div_v = (vol_changes[i] - vol_changes[i-1]) / (abs(vol_changes[i-1]) + 1e-10)
+                div_m = (momentum[i] - momentum[i-1]) / (abs(momentum[i-1]) + 1e-10)
+                curl_i = abs(div_m - div_v)
+                curl_j = abs(div_m - div_p)
+                curl_k = abs(div_v - div_p)
+                curl_values.append(np.sqrt(curl_i**2 + curl_j**2 + curl_k**2))
+        
+        curl = np.mean(curl_values) if curl_values else 0.0
+        
+        # 3️⃣ التدفق (Flux): Φ
+        # صافي تدفق الأموال = السعر × الحجم
+        flux_values = []
+        for i in range(-10, 0):
+            flow = price_changes[i] * vols[i]
+            flux_values.append(flow)
+        
+        flux = np.mean(flux_values) if flux_values else 0.0
+        
+        # تحديد الإشارة والقوة
+        if divergence > 0.05 and flux > 0:
+            signal = 'تدفق دخول قوي 🟢'
+            strength = 'قوي' if divergence > 0.1 else 'متوسط'
+        elif divergence < -0.05 and flux < 0:
+            signal = 'تدفق خروج قوي 🔴'
+            strength = 'قوي' if divergence < -0.1 else 'متوسط'
+        elif curl > 0.3:
+            signal = 'دوامات وتقلبات ⚠️'
+            strength = 'عالي التقلب'
+        else:
+            signal = 'محايد ⚪'
+            strength = 'ضعيف'
+        
+        return {
+            'divergence': float(divergence),
+            'curl': float(curl),
+            'flux': float(flux),
+            'signal': signal,
+            'strength': strength
+        }
+    except Exception as e:
+        logger.error(f"VFM error: {e}")
+        return {
+            'divergence': 0, 'curl': 0, 'flux': 0,
+            'signal': 'خطأ', 'strength': 'غير محدد'
+        }
+
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
         vgs_value = vgs.get('vgs', 0)
         vgs_direction = vgs.get('direction', 'محايد')
+        vfm = data.get('vfm', {})
+        vfm_div = vfm.get('divergence', 0)
+        vfm_flux = vfm.get('flux', 0)
         rsi = data.get('rsi', 50)
         kelly = data.get('kelly', {}).get('kelly_half', 0.1)
         mc_prob = data.get('mc', {}).get('prob_profit', 50)
@@ -380,6 +475,9 @@ def get_action_recommendation(data):
         elif vgs_direction == 'صعودي ': score += 1
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08: score -= 2
         elif vgs_direction == 'هبوطي ': score -= 1
+        # ✅ إضافة VFM إلى نظام النقاط
+        if vfm_div > 0.05 and vfm_flux > 0: score += 1
+        elif vfm_div < -0.05 and vfm_flux < 0: score -= 1
         if rsi < 30: score += 1
         elif rsi < 40: score += 0.5
         elif rsi > 70: score -= 1
@@ -407,7 +505,7 @@ def get_action_recommendation(data):
                     'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                     'confidence': 'منخفضة', 'score': score}
         elif score >= -3:
-            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
+            return {'action': 'دخول حذر (Short) ', 'emoji': '🟠', 'trade_type': 'SHORT',
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
@@ -445,6 +543,7 @@ def unified_analysis(symbol):
         mc = monte_carlo(closes)
         news = fetch_news(symbol)
         vgs_data = calc_vector_gradient_strength(closes, volumes)
+        vfm_data = calc_vector_flow_model(closes, volumes)  # ✅ VFM جديد
         vol_msg = "محايد"
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
@@ -458,14 +557,14 @@ def unified_analysis(symbol):
         if rsi < 75: buy_signals += 1
         if mc['prob_profit'] > 55: buy_signals += 1
         if ou['z_score'] < 1.5: buy_signals += 1
-        if vgs_data['direction'] == 'صعودي ' and vgs_data['vgs'] > 0.05: buy_signals += 1
+        if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05: buy_signals += 1
+        if vfm_data['divergence'] > 0.05 and vfm_data['flux'] > 0: buy_signals += 1  # ✅ VFM
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
         recommendation = get_action_recommendation({
-            'vgs': vgs_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc,
+            'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc,
             'direction': direction, 'buy_signals': buy_signals
         })
         trade_type = recommendation.get('trade_type', 'WAIT')
-        
         if direction == 'شراء':
             sl = current_price - (atr * 1.5)
             tp1 = current_price + (atr * 2)
@@ -487,7 +586,6 @@ def unified_analysis(symbol):
                 tp1 = current_price + (atr * 2)
                 tp2 = current_price + (atr * 3)
                 tp3 = current_price + (atr * 4.5)
-        
         rr = abs(tp2 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         return {
             'symbol': symbol, 'price': current_price, 'rsi': rsi,
@@ -495,7 +593,7 @@ def unified_analysis(symbol):
             'ou': ou, 'kelly': kelly, 'mc': mc, 'vol_msg': vol_msg,
             'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
             'rr': rr, 'news': news, 'buy_signals': buy_signals,
-            'vgs': vgs_data, 'recommendation': recommendation, 'trade_type': trade_type
+            'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': recommendation, 'trade_type': trade_type
         }
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}")
@@ -507,6 +605,7 @@ def ask_qwen(data):
     try:
         news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
         vgs = data.get('vgs', {})
+        vfm = data.get('vfm', {})
         rec = data.get('recommendation', {})
         prompt = f"""أنت محلل مالي خبير متخصص في الفيوتشر والفوركس. حلل البيانات التالية بالعربية:
 
@@ -520,10 +619,14 @@ OU Z-Score: {data['ou']['z_score']:.2f}
 Kelly: {data['kelly']['kelly_half']*100:.1f}%
 احتمال الربح: {data['mc']['prob_profit']:.1f}%
 حجم التداول: {data['vol_msg']}
-إشارات الشراء: {data['buy_signals']}/7
+إشارات الشراء: {data['buy_signals']}/8
 معيار التدرج ‖∇f‖ (VGS): {vgs.get('vgs', 0):.3f}
 قوة الاتجاه: {vgs.get('strength', 'محايد')}
 اتجاه التدرج: {vgs.get('direction', 'محايد')}
+التباعد (∇·F): {vfm.get('divergence', 0):.3f}
+الالتواء (|∇×F|): {vfm.get('curl', 0):.3f}
+التدفق (Φ): {vfm.get('flux', 0):.2f}
+إشارة VFM: {vfm.get('signal', 'محايد')}
 توصية الإجراء: {rec.get('action', 'انتظار')} (نقاط: {rec.get('score', 0)})
 
 الأخبار:
@@ -559,10 +662,11 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 
 def send_unified_report(data, ai_analysis=None):
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
-    if data['direction'] == 'شراء': direction_display = 'شراء 🟢'
+    if data['direction'] == 'شراء': direction_display = 'شراء '
     elif data['direction'] == 'بيع': direction_display = 'بيع 🔴'
     else: direction_display = 'انتظار ⚪'
     vgs = data.get('vgs', {})
+    vfm = data.get('vfm', {})
     rec = data.get('recommendation', {})
     part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
@@ -578,7 +682,7 @@ def send_unified_report(data, ai_analysis=None):
 • ATR: ${data['atr']:,.2f}
 • حجم التداول: {data['vol_msg']}"""
     send_long_report(part1)
-    part2 = f"""🧮 <b>نموذج OU (العودة للمتوسط):</b>
+    part2 = f""" <b>نموذج OU (العودة للمتوسط):</b>
 • Z-Score: {data['ou']['z_score']:.2f}
 
 💰 <b>Kelly Criterion:</b>
@@ -591,9 +695,9 @@ def send_unified_report(data, ai_analysis=None):
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
     part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
+ المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
-• معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
+• معيار التدرج ‖∇f: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
 • اتجاه التدرج: {vgs.get('direction', 'محايد')}
 • ∂f/∂P (السعر): {vgs.get('grad_P', 0):.3f}
@@ -603,6 +707,17 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>كلما ارتفع معيار التدرج، زادت قوة الاتجاه. القيم الموجبة للمشتقات الجزئية تؤكد الاتجاه الصعودي.</i>"""
     send_long_report(part_vgs)
+    part_vfm = f"""🌊 <b>نموذج التدفق المتجهي (VFM):</b>
+📐 المعادلات: ∇·F (التباعد)، |∇×F| (الالتواء)، Φ (التدفق)
+
+• التباعد (∇·F): {vfm.get('divergence', 0):.3f}
+• الالتواء (|×F|): {vfm.get('curl', 0):.3f}
+• التدفق (Φ): {vfm.get('flux', 0):.2f}
+• الإشارة: {vfm.get('signal', 'محايد')}
+• القوة: {vfm.get('strength', 'ضعيف')}
+
+💡 <i>التباعد الإيجابي = أموال تدخل الأصل. الالتواء العالي = تقلبات عنيفة. التدفق الموجب = تراكم.</i>"""
+    send_long_report(part_vfm)
     part3 = f"""📰 <b>آخر الأخبار (Finnhub - مصادر عالمية):</b>
 {news_text}"""
     send_long_report(part3)
@@ -627,10 +742,10 @@ def send_unified_report(data, ai_analysis=None):
 {rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
 
 📋 <b>الوصف:</b> {rec.get('description', '')}
-📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
-🔢 <b>نقاط التقييم:</b> {rec.get('score', 0)}
+ <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
+ <b>نقاط التقييم:</b> {rec.get('score', 0)}
 
-💡 <i>هذه التوصية مبنية على دمج جميع المؤشرات: VGS، RSI، Kelly، مونت كارلو، وإشارات الشراء. مصممة لمتداولي Long و Short. ليست نصيحة مالية - تداول بمسؤوليتك.</i>"""
+ <i>هذه التوصية مبنية على دمج جميع المؤشرات: VGS، VFM، RSI، Kelly، مونت كارلو، وإشارات الشراء. مصممة لمتداولي Long و Short. ليست نصيحة مالية - تداول بمسؤوليتك.</i>"""
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
@@ -640,10 +755,10 @@ def smart_analysis(symbol):
         send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     if OPENROUTER_API_KEY:
-        send_message("🤖 جاري تحليل Qwen AI (الخبير المالي)...")
+        send_message(" جاري تحليل Qwen AI (الخبير المالي)...")
         ai = ask_qwen(data)
         if not ai:
-            send_message("⚠️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
+            send_message("️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
     else:
         send_message("⚠️ مفتاح Qwen غير موجود")
         ai = None
@@ -665,9 +780,9 @@ def simple_report():
                     else:
                         report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
                 else:
-                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
+                    report += f"️ <b>{symbol}</b>: لا بيانات\n"
             except:
-                report += f"❌ <b>{symbol}</b>: خطأ\n"
+                report += f" <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e:
         send_message(f"خطأ: {str(e)}")
@@ -713,10 +828,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with Urgent News Alerts...")
-    
-    # ✅ تشغيل مراقب الأخبار العاجلة في الخلفية
+    logger.info("Starting Unified Trading Bot with VFM + Finnhub + Qwen AI...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
-    
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
