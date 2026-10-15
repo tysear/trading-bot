@@ -22,6 +22,11 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
+# ملف لتخزين الأخبار التي تم التنبيه عنها لتجنب التكرار
+ALERTED_NEWS_FILE = 'alerted_news.txt'
+URGENT_KEYWORDS = ['federal reserve', 'fed rate', 'inflation', 'cpi', 'jerome powell', 
+                   'interest rate', 'recession', 'nonfarm payrolls', 'nfp', 'fomc', 'treasury']
+
 app = Flask(__name__)
 
 @app.route('/')
@@ -68,6 +73,59 @@ def send_long_report(report):
         else:
             send_message(f"{part}\n\n✅ انتهى التقرير ({i}/{total})")
         time.sleep(0.5)
+
+def load_alerted_news():
+    try:
+        if os.path.exists(ALERTED_NEWS_FILE):
+            with open(ALERTED_NEWS_FILE, 'r', encoding='utf-8') as f:
+                return set(line.strip() for line in f if line.strip())
+    except:
+        pass
+    return set()
+
+def save_alerted_news(headline):
+    try:
+        with open(ALERTED_NEWS_FILE, 'a', encoding='utf-8') as f:
+            f.write(headline + '\n')
+    except:
+        pass
+
+def monitor_urgent_news():
+    """خلفية مراقبة الأخبار العاجلة كل 30 دقيقة"""
+    logger.info("Starting Urgent News Monitor...")
+    while True:
+        try:
+            time.sleep(1800)  # الانتظار 30 دقيقة
+            if not FINNHUB_API_KEY:
+                continue
+            
+            url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                news_list = resp.json()[:10]
+                alerted = load_alerted_news()
+                
+                for item in news_list:
+                    headline = item.get('headline', '').lower()
+                    source = item.get('source', '')
+                    original_headline = item.get('headline', '')
+                    url_news = item.get('url', '')
+                    
+                    # التحقق من الكلمات المفتاحية الحرجة
+                    if any(keyword in headline for keyword in URGENT_KEYWORDS):
+                        if original_headline not in alerted:
+                            alert_msg = (
+                                f"🚨 <b>تنبيه عاجل: خبر اقتصادي مؤثر!</b>\n\n"
+                                f"📰 <b>{original_headline}</b>\n"
+                                f"📡 المصدر: {source}\n"
+                                f"🔗 <a href='{url_news}'>رابط الخبر</a>\n\n"
+                                f"💡 <i>يُنصح بمراجعة السوق فوراً. يمكنك استخدام /smart لفحص الأصول.</i>"
+                            )
+                            send_message(alert_msg)
+                            save_alerted_news(original_headline)
+                            logger.info(f"Urgent news alerted: {original_headline}")
+        except Exception as e:
+            logger.error(f"News monitor error: {e}")
 
 def fetch_data(symbol):
     try:
@@ -333,7 +391,7 @@ def get_action_recommendation(data):
         if buy_signals >= 6: score += 1
         elif buy_signals <= 2: score -= 1
         if score >= 6:
-            return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '', 'trade_type': 'LONG',
+            return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '🟢', 'trade_type': 'LONG',
                     'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات. فرصة دخول ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
         elif score >= 3:
@@ -349,7 +407,7 @@ def get_action_recommendation(data):
                     'description': 'السوق متذبذب أو إشارات مختلطة. انتظر وضوح الاتجاه.',
                     'confidence': 'منخفضة', 'score': score}
         elif score >= -3:
-            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '', 'trade_type': 'SHORT',
+            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT',
                     'description': 'إشارات سلبية ضعيفة. يمكن دخول Short بحجم صغير.',
                     'confidence': 'متوسطة', 'score': score}
         elif score >= -6:
@@ -357,7 +415,7 @@ def get_action_recommendation(data):
                     'description': 'زخم هبوطي واضح. فرصة جيدة لدخول مركز بيع.',
                     'confidence': 'عالية', 'score': score}
         else:
-            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '', 'trade_type': 'SHORT',
+            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '🔴', 'trade_type': 'SHORT',
                     'description': 'انهيار أو زخم هبوطي قوي جداً. فرصة Short ممتازة.',
                     'confidence': 'عالية جداً', 'score': score}
     except Exception as e:
@@ -391,8 +449,8 @@ def unified_analysis(symbol):
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
-            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع "
-            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض "
+            if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع 📈"
+            elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض 📉"
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -533,7 +591,7 @@ def send_unified_report(data, ai_analysis=None):
 • نطاق 90%: ${data['mc']['p5']:,.2f} - ${data['mc']['p95']:,.2f}"""
     send_long_report(part2)
     part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/M)²)
+📐 المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (∂f/∂R)² + (∂f/∂M)²)
 
 • معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
@@ -576,10 +634,10 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part_rec)
 
 def smart_analysis(symbol):
-    send_message(f" جاري التحليل الشامل لـ {symbol}...")
+    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
     data = unified_analysis(symbol)
     if not data:
-        send_message(f" فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
+        send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري تحليل Qwen AI (الخبير المالي)...")
@@ -587,14 +645,14 @@ def smart_analysis(symbol):
         if not ai:
             send_message("⚠️ فشل تحليل Qwen AI - سيتم عرض التقرير بدونه")
     else:
-        send_message("️ مفتاح Qwen غير موجود")
+        send_message("⚠️ مفتاح Qwen غير موجود")
         ai = None
     send_unified_report(data, ai)
 
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -619,16 +677,14 @@ def handle_command(command):
     if cmd == '/start':
         send_message("🤖 <b>بوت التداول الذكي الشامل (فيوتشر/فوركس)</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل موحد\n/test_report - تقرير بسيط\n/help - المساعدة")
     elif cmd == '/test_report':
-        send_message(" جاري...")
+        send_message("⏳ جاري...")
         simple_report()
     elif cmd.startswith('/smart'):
-        # ✅ إصلاح: استخدام split(' ', 1) للحفاظ على الرموز التي تحتوي على =
         parts = command.split(' ', 1)
         if len(parts) < 2:
             send_message("الاستخدام: /smart <رمز>\nمثال: /smart GC=F\nمثال: /smart XAUUSD=X\nمثال: /smart BTC-USD")
             return
         symbol = parts[1].strip().upper()
-        # ✅ إزالة أي مسافات داخلية من الرمز
         symbol = symbol.replace(' ', '')
         smart_analysis(symbol)
     elif cmd == '/help':
@@ -657,6 +713,10 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with Finnhub News + Qwen AI...")
+    logger.info("Starting Unified Trading Bot with Urgent News Alerts...")
+    
+    # ✅ تشغيل مراقب الأخبار العاجلة في الخلفية
+    threading.Thread(target=monitor_urgent_news, daemon=True).start()
+    
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
