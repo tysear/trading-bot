@@ -1,4 +1,3 @@
-
 import requests
 import time
 import yfinance as yf
@@ -119,7 +118,7 @@ def monitor_urgent_news():
                             alert_msg = (
                                 f"🚨 <b>تنبيه عاجل: خبر اقتصادي مؤثر!</b>\n\n"
                                 f"📰 <b>{original_headline}</b>\n"
-                                f"📡 المصدر: {source}\n"
+                                f" المصدر: {source}\n"
                                 f"🔗 <a href='{url_news}'>رابط الخبر</a>\n\n"
                                 f"💡 <i>يُنصح بمراجعة السوق فوراً. يمكنك استخدام /smart لفحص الأصول.</i>"
                             )
@@ -164,7 +163,6 @@ def fetch_data(symbol):
 # ORDER BOOK - مع Fallbacks متعددة
 # ══════════════════════════════════════════
 def fetch_order_book(symbol):
-    """جلب Order Book مع 4 مصادر بديلة"""
     try:
         if symbol not in CRYPTO_SYMBOLS:
             logger.info(f"⏭️ Order Book غير متاح لـ {symbol} (كريبتو فقط)")
@@ -175,33 +173,26 @@ def fetch_order_book(symbol):
         
         # المحاولة 1: Binance Global
         try:
-            logger.info(f"🔵 Trying Binance Global for {binance_symbol}...")
             url = f"https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=20"
             resp = requests.get(url, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get('bids') and data.get('asks'):
-                    logger.info(f"✅ Binance Global succeeded for {symbol}")
                     return parse_order_book_data(data, 'Binance Global')
-        except Exception as e:
-            logger.warning(f"️ Binance Global failed: {e}")
+        except: pass
         
         # المحاولة 2: Binance US
         try:
-            logger.info(f"🟢 Trying Binance US for {binance_symbol}...")
             url = f"https://api.binance.us/api/v3/depth?symbol={binance_symbol}&limit=20"
             resp = requests.get(url, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get('bids') and data.get('asks'):
-                    logger.info(f"✅ Binance US succeeded for {symbol}")
                     return parse_order_book_data(data, 'Binance US')
-        except Exception as e:
-            logger.warning(f"⚠️ Binance US failed: {e}")
+        except: pass
         
         # المحاولة 3: CoinGecko
         try:
-            logger.info(f"🟡 Trying CoinGecko for {coingecko_id}...")
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd&include_24hr_vol=true"
             resp = requests.get(url, timeout=15)
             if resp.status_code == 200:
@@ -211,198 +202,219 @@ def fetch_order_book(symbol):
                     price = float(coin_data.get('usd', 0))
                     volume = float(coin_data.get('usd_24h_vol', 0))
                     if price > 0:
-                        logger.info(f"✅ CoinGecko succeeded for {symbol}")
                         return create_estimated_order_book(price, price * 1.0001, volume, 'CoinGecko')
-        except Exception as e:
-            logger.warning(f"⚠️ CoinGecko failed: {e}")
+        except: pass
         
         # المحاولة 4: Yahoo Finance
         try:
-            logger.info(f"🔴 Trying Yahoo Finance fallback for {symbol}...")
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period="5d")
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
                 volume = float(hist['Volume'].iloc[-1])
                 atr = float((hist['High'] - hist['Low']).mean())
-                logger.info(f"✅ Yahoo Finance fallback for {symbol}")
                 return create_estimated_order_book(current_price, current_price * 1.0001, volume, 'Yahoo Finance (estimated)', atr)
-        except Exception as e:
-            logger.warning(f"⚠️ Yahoo Finance fallback failed: {e}")
+        except: pass
         
-        logger.error(f"❌ All Order Book sources failed for {symbol}")
         return None
     except Exception as e:
-        logger.error(f"❌ Order Book error for {symbol}: {e}")
+        logger.error(f"Order Book error for {symbol}: {e}")
         return None
 
 def parse_order_book_data(data, source):
-    """تحليل بيانات Order Book من Binance"""
     try:
         bids = data.get('bids', [])
         asks = data.get('asks', [])
-        if not bids or not asks:
-            return None
-        
+        if not bids or not asks: return None
         total_bid_volume = sum(float(bid[1]) for bid in bids[:10])
         total_ask_volume = sum(float(ask[1]) for ask in asks[:10])
         total_volume = total_bid_volume + total_ask_volume
-        
-        if total_volume == 0:
-            return None
-        
+        if total_volume == 0: return None
         buy_pressure = (total_bid_volume / total_volume) * 100
         sell_pressure = (total_ask_volume / total_volume) * 100
-        
         best_bid = float(bids[0][0])
         best_ask = float(asks[0][0])
         spread = best_ask - best_bid
         spread_percent = (spread / best_ask * 100) if best_ask > 0 else 0
-        
         support_levels = []
         resistance_levels = []
         for bid in bids[:10]:
             price = float(bid[0])
             volume = float(bid[1])
-            if volume > total_bid_volume * 0.15:
-                support_levels.append({'price': price, 'volume': volume})
+            if volume > total_bid_volume * 0.15: support_levels.append({'price': price, 'volume': volume})
         for ask in asks[:10]:
             price = float(ask[0])
             volume = float(ask[1])
-            if volume > total_ask_volume * 0.15:
-                resistance_levels.append({'price': price, 'volume': volume})
-        
+            if volume > total_ask_volume * 0.15: resistance_levels.append({'price': price, 'volume': volume})
         return {
-            'best_bid': best_bid, 'best_ask': best_ask,
-            'spread': spread, 'spread_percent': spread_percent,
+            'best_bid': best_bid, 'best_ask': best_ask, 'spread': spread, 'spread_percent': spread_percent,
             'buy_pressure': buy_pressure, 'sell_pressure': sell_pressure,
             'total_bid_volume': total_bid_volume, 'total_ask_volume': total_ask_volume,
             'support_levels': support_levels[:3], 'resistance_levels': resistance_levels[:3],
             'source': source, 'estimated': False
         }
-    except Exception as e:
-        logger.error(f"Parse error: {e}")
-        return None
+    except: return None
 
 def create_estimated_order_book(bid, ask, volume, source, atr=None):
-    """إنشاء Order Book تقديري"""
     try:
-        if atr is None:
-            atr = bid * 0.02
+        if atr is None: atr = bid * 0.02
         spread = ask - bid
         spread_percent = (spread / ask * 100) if ask > 0 else 0
         buy_pressure = 50 + (volume / 1000000000 * 5)
         buy_pressure = max(40, min(60, buy_pressure))
         sell_pressure = 100 - buy_pressure
-        
-        support_levels = [
-            {'price': round(bid - atr, 4), 'volume': volume * 0.3},
-            {'price': round(bid - atr * 2, 4), 'volume': volume * 0.5},
-        ]
-        resistance_levels = [
-            {'price': round(ask + atr, 4), 'volume': volume * 0.3},
-            {'price': round(ask + atr * 2, 4), 'volume': volume * 0.5},
-        ]
-        
+        support_levels = [{'price': round(bid - atr, 4), 'volume': volume * 0.3}, {'price': round(bid - atr * 2, 4), 'volume': volume * 0.5}]
+        resistance_levels = [{'price': round(ask + atr, 4), 'volume': volume * 0.3}, {'price': round(ask + atr * 2, 4), 'volume': volume * 0.5}]
         return {
-            'best_bid': bid, 'best_ask': ask,
-            'spread': spread, 'spread_percent': spread_percent,
+            'best_bid': bid, 'best_ask': ask, 'spread': spread, 'spread_percent': spread_percent,
             'buy_pressure': buy_pressure, 'sell_pressure': sell_pressure,
             'total_bid_volume': volume * 0.5, 'total_ask_volume': volume * 0.5,
             'support_levels': support_levels, 'resistance_levels': resistance_levels,
             'source': source, 'estimated': True
         }
-    except Exception as e:
-        logger.error(f"Estimated OB error: {e}")
-        return None
+    except: return None
 
 def analyze_order_book(ob_data):
-    """تحليل Order Book"""
-    if not ob_data:
-        return None
+    if not ob_data: return None
     try:
         buy_pressure = ob_data['buy_pressure']
         sell_pressure = ob_data['sell_pressure']
-        if buy_pressure > 65:
-            signal = 'ضغط شراء قوي '
-            strength = 'قوي'
-        elif buy_pressure > 55:
-            signal = 'ضغط شراء معتدل 🟢'
-            strength = 'متوسط'
-        elif sell_pressure > 65:
-            signal = 'ضغط بيع قوي 🔴'
-            strength = 'قوي'
-        elif sell_pressure > 55:
-            signal = 'ضغط بيع معتدل 🔴'
-            strength = 'متوسط'
-        else:
-            signal = 'توازن ⚪'
-            strength = 'ضعيف'
-        spread_status = 'ضيق ✅' if ob_data['spread_percent'] < 0.1 else 'عادي' if ob_data['spread_percent'] < 0.5 else 'واسع ⚠️'
+        if buy_pressure > 65: signal, strength = 'ضغط شراء قوي 🟢', 'قوي'
+        elif buy_pressure > 55: signal, strength = 'ضغط شراء معتدل 🟢', 'متوسط'
+        elif sell_pressure > 65: signal, strength = 'ضغط بيع قوي ', 'قوي'
+        elif sell_pressure > 55: signal, strength = 'ضغط بيع معتدل 🔴', 'متوسط'
+        else: signal, strength = 'توازن ⚪', 'ضعيف'
+        spread_status = 'ضيق ✅' if ob_data['spread_percent'] < 0.1 else 'عادي' if ob_data['spread_percent'] < 0.5 else 'واسع ️'
         return {
-            'signal': signal, 'strength': strength,
-            'buy_pressure': buy_pressure, 'sell_pressure': sell_pressure,
-            'spread_status': spread_status,
-            'support_count': len(ob_data['support_levels']),
-            'resistance_count': len(ob_data['resistance_levels']),
-            'source': ob_data.get('source', 'غير معروف'),
-            'estimated': ob_data.get('estimated', False)
+            'signal': signal, 'strength': strength, 'buy_pressure': buy_pressure, 'sell_pressure': sell_pressure,
+            'spread_status': spread_status, 'source': ob_data.get('source', 'غير معروف'), 'estimated': ob_data.get('estimated', False)
         }
-    except Exception as e:
-        logger.error(f"Order Book analysis error: {e}")
-        return None
+    except: return None
 
+# ══════════════════════════════════════════
+# التحليل التفاضلي المتقدم (جديد!)
+# ══════════════════════════════════════════
+def calc_damped_oscillator(closes, period=20):
+    try:
+        if len(closes) < period: return {'regime': 'N/A', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
+        prices = np.array(closes[-period:], dtype=float)
+        fair_value = np.mean(prices)
+        y = prices - fair_value
+        y_prime = np.gradient(y)
+        y_double_prime = np.gradient(y_prime)
+        
+        omega_sq = max(0.01, abs(-y_double_prime[-1] / y[-1])) if abs(y[-1]) > 1e-10 else 0.01
+        gamma = abs(-y_double_prime[-1] - omega_sq * y[-1]) / (2 * abs(y_prime[-1])) if abs(y_prime[-1]) > 1e-10 else 0.3
+        damping_ratio = gamma / (2 * np.sqrt(omega_sq))
+        
+        phase = np.arctan2(y_prime[-1], y[-1])
+        next_y = y[-1] + y_prime[-1] + 0.5 * y_double_prime[-1]
+        
+        regime = 'تذبذب نشط 🌀' if damping_ratio < 1 else 'تخميد عالي 🛑'
+        position = 'قمة 📉' if np.pi/2 < phase < 3*np.pi/2 else 'قاع 📈'
+        
+        return {'regime': regime, 'position': position, 'damping': damping_ratio, 'prediction': fair_value + next_y}
+    except: return {'regime': 'خطأ', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
+
+def calc_diffusion_model(closes, volumes, period=20):
+    try:
+        if len(closes) < period: return {'signal': 0, 'strength': 0, 'curvature': 0, 'D': 0}
+        prices = np.array(closes[-period:], dtype=float)
+        vols = np.array(volumes[-period:], dtype=float)
+        
+        first_deriv = np.gradient(prices)
+        second_deriv = np.gradient(first_deriv)
+        
+        volatility = np.std(first_deriv) + 1e-10
+        avg_vol = np.mean(vols) + 1e-10
+        D = volatility * np.log10(avg_vol)
+        
+        diffusion_val = D * second_deriv[-1]
+        strength = min(1.0, abs(diffusion_val) / (volatility * 10))
+        direction = 1 if diffusion_val > 0 else -1
+        
+        return {'signal': direction, 'strength': strength, 'curvature': second_deriv[-1], 'D': D}
+    except: return {'signal': 0, 'strength': 0, 'curvature': 0, 'D': 0}
+
+def calc_forced_motion(closes, volumes, period=20):
+    try:
+        if len(closes) < period: return {'news_dominance': False, 'prediction': closes[-1]}
+        prices = np.array(closes[-period:], dtype=float)
+        y = prices - np.mean(prices)
+        y_prime = np.gradient(y)
+        y_double_prime = np.gradient(y_prime)
+        
+        k, c, m = 0.1, 0.3, 1.0
+        internal_force = -c * y_prime[-1] - k * y[-1]
+        external_force = m * y_double_prime[-1] - internal_force
+        
+        news_dominance = abs(external_force) > abs(internal_force) * 1.5
+        predicted_acc = (external_force + internal_force) / m
+        predicted_y = y[-1] + y_prime[-1] + 0.5 * predicted_acc
+        
+        return {'internal_force': internal_force, 'external_force': external_force, 
+                'news_dominance': news_dominance, 'prediction': np.mean(prices) + predicted_y}
+    except: return {'news_dominance': False, 'prediction': closes[-1]}
+
+def advanced_differential_analysis(closes, volumes):
+    try:
+        osc = calc_damped_oscillator(closes)
+        diff = calc_diffusion_model(closes, volumes)
+        forced = calc_forced_motion(closes, volumes)
+        
+        signals = []
+        if 'قاع' in osc['position']: signals.append(1)
+        elif 'قمة' in osc['position']: signals.append(-1)
+        
+        if diff['strength'] > 0.3: signals.append(diff['signal'])
+        
+        if abs(forced['external_force']) > abs(forced['internal_force']) * 1.5:
+            signals.append(1 if forced['external_force'] > 0 else -1)
+        
+        final_signal = np.mean(signals) if signals else 0
+        confidence = len(signals) / 3.0
+        
+        return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 
+                'final_signal': final_signal, 'confidence': confidence}
+    except: return {'oscillator': {}, 'diffusion': {}, 'forced': {}, 'final_signal': 0, 'confidence': 0}
+
+# ══════════════════════════════════════════
+# المؤشرات الأساسية والنماذج
+# ══════════════════════════════════════════
 def fetch_finnhub_news(symbol):
-    if not FINNHUB_API_KEY:
-        return None
+    if not FINNHUB_API_KEY: return None
     try:
         general_news_url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
         general_resp = requests.get(general_news_url, timeout=10)
-        finnhub_symbol = symbol
-        if symbol.endswith('-USD'):
-            finnhub_symbol = 'BINANCE:' + symbol.replace('-USD', '')
+        finnhub_symbol = 'BINANCE:' + symbol.replace('-USD', '') if symbol.endswith('-USD') else symbol
         company_news_url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={int(time.time())-86400}&to={int(time.time())}&token={FINNHUB_API_KEY}"
         company_resp = requests.get(company_news_url, timeout=10)
         news_list = []
         if general_resp.status_code == 200:
-            general_news = general_resp.json()[:5]
-            for item in general_news:
+            for item in general_resp.json()[:5]:
                 headline = item.get('headline', '')
-                source = item.get('source', '')
-                if headline and any(keyword in headline.lower() for keyword in 
-                    ['fed', 'federal', 'trump', 'biden', 'treasury', 'bank', 'inflation', 'interest rate', 'crypto', 'bitcoin', 'sec', 'gold']):
-                    news_list.append(f" <b>{headline}</b>\n   <i>المصدر: {source}</i>")
+                if headline and any(k in headline.lower() for k in ['fed', 'trump', 'biden', 'bank', 'inflation', 'crypto', 'bitcoin', 'gold']):
+                    news_list.append(f"🌍 <b>{headline}</b>\n   <i>المصدر: {item.get('source', '')}</i>")
         if company_resp.status_code == 200:
-            company_news = company_resp.json()[:3]
-            for item in company_news:
-                headline = item.get('headline', '')
-                source = item.get('source', '')
-                if headline:
-                    news_list.append(f"📊 <b>{headline}</b>\n   <i>المصدر: {source}</i>")
-        if len(news_list) == 0:
-            return ["لا توجد أخبار مهمة حالياً."]
-        return news_list[:8]
-    except Exception as e:
-        logger.error(f"Finnhub news error: {e}")
-        return None
+            for item in company_resp.json()[:3]:
+                if item.get('headline'):
+                    news_list.append(f"📊 <b>{item['headline']}</b>\n   <i>المصدر: {item.get('source', '')}</i>")
+        return news_list[:8] if news_list else ["لا توجد أخبار مهمة حالياً."]
+    except: return None
 
 def fetch_news(symbol):
     finnhub_news = fetch_finnhub_news(symbol)
-    if finnhub_news:
-        return finnhub_news
+    if finnhub_news: return finnhub_news
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news
-        if not news or len(news) == 0:
-            return ["لا توجد أخبار حديثة."]
-        return [f"• {item.get('title', 'بدون عنوان')} ({item.get('publisher', 'مجهول')})" for item in news[:3]]
-    except:
-        return ["تعذر جلب الأخبار."]
+        if not news: return ["لا توجد أخبار حديثة."]
+        return [f"• {item.get('title', '')} ({item.get('publisher', '')})" for item in news[:3]]
+    except: return ["تعذر جلب الأخبار."]
 
 def calc_rsi(prices, period=14):
     try:
-        if len(prices) < period + 1:
-            return 50.0
+        if len(prices) < period + 1: return 50.0
         gains, losses = [], []
         for i in range(-period, 0):
             change = prices[i] - prices[i-1]
@@ -410,48 +422,35 @@ def calc_rsi(prices, period=14):
             losses.append(max(-change, 0))
         avg_gain = sum(gains) / period
         avg_loss = sum(losses) / period
-        if avg_loss == 0:
-            return 100.0
+        if avg_loss == 0: return 100.0
         return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
-    except:
-        return 50.0
+    except: return 50.0
 
 def calc_ema(prices, period):
     try:
-        if len(prices) < period:
-            return prices[-1]
+        if len(prices) < period: return prices[-1]
         multiplier = 2.0 / (period + 1)
         ema = sum(prices[:period]) / period
-        for price in prices[period:]:
-            ema = (price - ema) * multiplier + ema
+        for price in prices[period:]: ema = (price - ema) * multiplier + ema
         return ema
-    except:
-        return prices[-1]
+    except: return prices[-1]
 
 def calc_macd(prices):
-    try:
-        return calc_ema(prices, 12) - calc_ema(prices, 26)
-    except:
-        return 0.0
+    try: return calc_ema(prices, 12) - calc_ema(prices, 26)
+    except: return 0.0
 
 def calc_atr(highs, lows, closes, period=14):
     try:
-        if len(closes) < period + 1:
-            return closes[-1] * 0.02
-        true_ranges = []
-        for i in range(-period, 0):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-            true_ranges.append(tr)
+        if len(closes) < period + 1: return closes[-1] * 0.02
+        true_ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) for i in range(-period, 0)]
         return sum(true_ranges) / period
-    except:
-        return closes[-1] * 0.02
+    except: return closes[-1] * 0.02
 
 def calc_ou_model(prices):
     try:
         closes = np.array(prices, dtype=float)
         closes = closes[~np.isnan(closes)]
-        if len(closes) < 10:
-            return {'mu': 0, 'sigma': 0, 'z_score': 0}
+        if len(closes) < 10: return {'mu': 0, 'sigma': 0, 'z_score': 0}
         returns = np.diff(np.log(closes))
         lookback = min(50, len(closes) - 1)
         recent = closes[-lookback:]
@@ -460,34 +459,29 @@ def calc_ou_model(prices):
         current = float(closes[-1])
         z_score = (current - mu) / (sigma * current) if sigma > 0 else 0.0
         return {'mu': mu, 'sigma': sigma, 'z_score': z_score}
-    except:
-        return {'mu': 0, 'sigma': 0, 'z_score': 0}
+    except: return {'mu': 0, 'sigma': 0, 'z_score': 0}
 
 def calc_kelly(prices):
     try:
         closes = np.array(prices, dtype=float)
         closes = closes[~np.isnan(closes)]
-        if len(closes) < 10:
-            return {'win_rate': 0.5, 'kelly_half': 0.1}
+        if len(closes) < 10: return {'win_rate': 0.5, 'kelly_half': 0.1}
         wins = 0
         total = min(50, len(closes) - 5)
         for i in range(-total, -5):
-            if closes[i+5] > closes[i]:
-                wins += 1
+            if closes[i+5] > closes[i]: wins += 1
         win_rate = wins / total if total > 0 else 0.5
         win_loss_ratio = 2.0
         edge = (win_rate * win_loss_ratio) - (1 - win_rate)
         kelly_full = edge / win_loss_ratio if win_loss_ratio > 0 else 0
         return {'win_rate': win_rate, 'kelly_half': max(min(kelly_full / 2, 0.25), 0)}
-    except:
-        return {'win_rate': 0.5, 'kelly_half': 0.1}
+    except: return {'win_rate': 0.5, 'kelly_half': 0.1}
 
 def monte_carlo(prices, days=30, simulations=500):
     try:
         closes = np.array(prices, dtype=float)
         closes = closes[~np.isnan(closes)]
-        if len(closes) < 10:
-            return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
+        if len(closes) < 10: return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
         returns = np.diff(np.log(closes))
         mu = float(np.mean(returns))
         sigma = float(np.std(returns))
@@ -507,110 +501,97 @@ def monte_carlo(prices, days=30, simulations=500):
             'p5': float(np.percentile(final_prices, 5)),
             'p95': float(np.percentile(final_prices, 95))
         }
-    except:
-        return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
+    except: return {'prob_profit': 50, 'prob_loss_10': 20, 'p5': 0, 'p95': 0}
 
 def calc_vector_gradient_strength(closes, volumes):
     try:
-        if len(closes) < 20:
-            return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
-                    'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
+        if len(closes) < 20: return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
         prices = np.array(closes, dtype=float)
         vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
         valid_mask = ~(np.isnan(prices) | np.isnan(vols))
         prices = prices[valid_mask]
         vols = vols[valid_mask]
-        if len(prices) < 20:
-            return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف',
-                    'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
+        if len(prices) < 20: return {'vgs': 0, 'direction': 'محايد', 'strength': 'ضعيف', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
+        
         recent_prices = prices[-10:]
         grad_P = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-10)
         recent_vols = vols[-10:]
         avg_vol = np.mean(vols[-20:]) + 1e-10
         grad_V = (np.mean(recent_vols[-5:]) - np.mean(recent_vols[:5])) / avg_vol
+        
         rsi_values = [calc_rsi(prices[:i].tolist()) for i in range(14, len(prices) + 1)]
         recent_rsi = rsi_values[-10:]
         grad_R = (recent_rsi[-1] - recent_rsi[0]) / 100.0
+        
         macd_values = [calc_ema(prices[:i].tolist(), 12) - calc_ema(prices[:i].tolist(), 26) for i in range(26, len(prices) + 1)]
         if len(macd_values) >= 10:
             recent_macd = macd_values[-10:]
             avg_macd = np.mean(np.abs(macd_values[-20:])) + 1e-10
             grad_M = (np.mean(recent_macd[-5:]) - np.mean(recent_macd[:5])) / avg_macd
-        else:
-            grad_M = 0.0
+        else: grad_M = 0.0
+        
         w1, w2, w3, w4 = 0.4, 0.2, 0.2, 0.2
         grad_P_w, grad_V_w, grad_R_w, grad_M_w = w1*grad_P, w2*grad_V, w3*grad_R, w4*grad_M
         vgs = np.sqrt(grad_P_w**2 + grad_V_w**2 + grad_R_w**2 + grad_M_w**2)
         direction_score = grad_P_w + grad_V_w + grad_R_w + grad_M_w
+        
         if vgs > 0.15: strength = 'قوي جداً 🔥'
         elif vgs > 0.08: strength = 'قوي 💪'
-        elif vgs > 0.03: strength = 'متوسط ⚪'
-        else: strength = 'ضعيف ⚪'
-        if direction_score > 0.02: direction = 'صعودي 🟢'
+        elif vgs > 0.03: strength = 'متوسط '
+        else: strength = 'ضعيف '
+        
+        if direction_score > 0.02: direction = 'صعودي '
         elif direction_score < -0.02: direction = 'هبوطي 🔴'
         else: direction = 'محايد ⚪'
+        
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength,
-                'grad_P': float(grad_P), 'grad_V': float(grad_V),
-                'grad_R': float(grad_R), 'grad_M': float(grad_M), 'direction_score': float(direction_score)}
-    except Exception as e:
-        logger.error(f"VGS error: {e}")
-        return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ',
-                'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
+                'grad_P': float(grad_P), 'grad_V': float(grad_V), 'grad_R': float(grad_R), 'grad_M': float(grad_M), 'direction_score': float(direction_score)}
+    except: return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
 def calc_vector_flow_model(closes, volumes):
     try:
-        if len(closes) < 20:
-            return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
+        if len(closes) < 20: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
         prices = np.array(closes, dtype=float)
         vols = np.array(volumes, dtype=float) if len(volumes) == len(closes) else np.ones(len(closes))
         valid_mask = ~(np.isnan(prices) | np.isnan(vols))
         prices = prices[valid_mask]
         vols = vols[valid_mask]
-        if len(prices) < 20:
-            return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
+        if len(prices) < 20: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
+        
         price_changes = np.diff(prices) / (prices[:-1] + 1e-10)
         vol_changes = np.diff(vols) / (vols[:-1] + 1e-10)
         momentum = np.gradient(prices)
+        
         divergence_values = []
+        curl_values = []
+        flux_values = []
+        
         for i in range(-10, -1):
             if i-1 >= -len(price_changes):
                 div_p = (price_changes[i] - price_changes[i-1]) / (abs(price_changes[i-1]) + 1e-10)
                 div_v = (vol_changes[i] - vol_changes[i-1]) / (abs(vol_changes[i-1]) + 1e-10)
                 div_m = (momentum[i] - momentum[i-1]) / (abs(momentum[i-1]) + 1e-10)
                 divergence_values.append((div_p + div_v + div_m) / 3)
-        divergence = np.mean(divergence_values) if divergence_values else 0.0
-        curl_values = []
-        for i in range(-10, -1):
-            if i-1 >= -len(price_changes):
-                div_p = (price_changes[i] - price_changes[i-1]) / (abs(price_changes[i-1]) + 1e-10)
-                div_v = (vol_changes[i] - vol_changes[i-1]) / (abs(vol_changes[i-1]) + 1e-10)
-                div_m = (momentum[i] - momentum[i-1]) / (abs(momentum[i-1]) + 1e-10)
+                
                 curl_i = abs(div_m - div_v)
                 curl_j = abs(div_m - div_p)
                 curl_k = abs(div_v - div_p)
                 curl_values.append(np.sqrt(curl_i**2 + curl_j**2 + curl_k**2))
+                
+                flow = price_changes[i] * vols[i]
+                flux_values.append(flow)
+        
+        divergence = np.mean(divergence_values) if divergence_values else 0.0
         curl = np.mean(curl_values) if curl_values else 0.0
-        flux_values = []
-        for i in range(-10, 0):
-            flow = price_changes[i] * vols[i]
-            flux_values.append(flow)
         flux = np.mean(flux_values) if flux_values else 0.0
-        if divergence > 0.05 and flux > 0:
-            signal = 'تدفق دخول قوي 🟢'
-            strength = 'قوي' if divergence > 0.1 else 'متوسط'
-        elif divergence < -0.05 and flux < 0:
-            signal = 'تدفق خروج قوي 🔴'
-            strength = 'قوي' if divergence < -0.1 else 'متوسط'
-        elif curl > 0.3:
-            signal = 'دوامات وتقلبات ️'
-            strength = 'عالي التقلب'
-        else:
-            signal = 'محايد ⚪'
-            strength = 'ضعيف'
+        
+        if divergence > 0.05 and flux > 0: signal, strength = 'تدفق دخول قوي 🟢', 'قوي' if divergence > 0.1 else 'متوسط'
+        elif divergence < -0.05 and flux < 0: signal, strength = 'تدفق خروج قوي 🔴', 'قوي' if divergence < -0.1 else 'متوسط'
+        elif curl > 0.3: signal, strength = 'دوامات وتقلبات ️', 'عالي التقلب'
+        else: signal, strength = 'محايد ', 'ضعيف'
+        
         return {'divergence': float(divergence), 'curl': float(curl), 'flux': float(flux), 'signal': signal, 'strength': strength}
-    except Exception as e:
-        logger.error(f"VFM error: {e}")
-        return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
+    except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
 def get_action_recommendation(data):
     try:
@@ -626,59 +607,58 @@ def get_action_recommendation(data):
         direction = data.get('direction', 'انتظار')
         buy_signals = data.get('buy_signals', 0)
         score = 0
+        
         if direction == 'شراء': score += 5
         elif direction == 'بيع': score -= 5
+        
         if vgs_direction == 'صعودي 🟢' and vgs_value > 0.08: score += 2
         elif vgs_direction == 'صعودي 🟢': score += 1
         elif vgs_direction == 'هبوطي 🔴' and vgs_value > 0.08: score -= 2
         elif vgs_direction == 'هبوطي 🔴': score -= 1
+        
         if vfm_div > 0.05 and vfm_flux > 0: score += 1
         elif vfm_div < -0.05 and vfm_flux < 0: score -= 1
+        
         ob_analysis = data.get('ob_analysis')
         if ob_analysis:
             ob_signal = ob_analysis.get('signal', '')
             if 'شراء قوي' in ob_signal: score += 1
             elif 'بيع قوي' in ob_signal: score -= 1
+        
         if rsi < 30: score += 1
         elif rsi < 40: score += 0.5
         elif rsi > 70: score -= 1
         elif rsi > 60: score -= 0.5
+        
         if kelly > 0.15: score += 1 if score > 0 else -1
         elif kelly < 0.05: score -= 0.5 if score > 0 else 0.5
+        
         if mc_prob > 65: score += 1
         elif mc_prob < 35: score -= 1
+        
         if buy_signals >= 6: score += 1
         elif buy_signals <= 2: score -= 1
-        if score >= 6:
-            return {'action': 'افتح شراء (Long) قوي ', 'emoji': '🟢', 'trade_type': 'LONG', 'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات.', 'confidence': 'عالية جداً', 'score': score}
-        elif score >= 3:
-            return {'action': 'افتح شراء (Long) ', 'emoji': '🟢', 'trade_type': 'LONG', 'description': 'مؤشرات إيجابية.', 'confidence': 'عالية', 'score': score}
-        elif score >= 1:
-            return {'action': 'دخول حذر (Long) 🟡', 'emoji': '', 'trade_type': 'LONG', 'description': 'إشارات إيجابية ضعيفة.', 'confidence': 'متوسطة', 'score': score}
-        elif score >= -1:
-            return {'action': 'انتظار ⚪', 'emoji': '', 'trade_type': 'WAIT', 'description': 'السوق متذبذب.', 'confidence': 'منخفضة', 'score': score}
-        elif score >= -3:
-            return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT', 'description': 'إشارات سلبية ضعيفة.', 'confidence': 'متوسطة', 'score': score}
-        elif score >= -6:
-            return {'action': 'افتح بيع (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT', 'description': 'زخم هبوطي واضح.', 'confidence': 'عالية', 'score': score}
-        else:
-            return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '🔴', 'trade_type': 'SHORT', 'description': 'زخم هبوطي قوي جداً.', 'confidence': 'عالية جداً', 'score': score}
-    except Exception as e:
-        logger.error(f"Recommendation error: {e}")
-        return {'action': 'انتظار ⚪', 'emoji': '⚪', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
+        
+        if score >= 6: return {'action': 'افتح شراء (Long) قوي 🟢', 'emoji': '🟢', 'trade_type': 'LONG', 'description': 'زخم صعودي قوي مع تأكيد من جميع المؤشرات.', 'confidence': 'عالية جداً', 'score': score}
+        elif score >= 3: return {'action': 'افتح شراء (Long) 🟢', 'emoji': '🟢', 'trade_type': 'LONG', 'description': 'مؤشرات إيجابية.', 'confidence': 'عالية', 'score': score}
+        elif score >= 1: return {'action': 'دخول حذر (Long) 🟡', 'emoji': '🟡', 'trade_type': 'LONG', 'description': 'إشارات إيجابية ضعيفة.', 'confidence': 'متوسطة', 'score': score}
+        elif score >= -1: return {'action': 'انتظار ⚪', 'emoji': '', 'trade_type': 'WAIT', 'description': 'السوق متذبذب.', 'confidence': 'منخفضة', 'score': score}
+        elif score >= -3: return {'action': 'دخول حذر (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT', 'description': 'إشارات سلبية ضعيفة.', 'confidence': 'متوسطة', 'score': score}
+        elif score >= -6: return {'action': 'افتح بيع (Short) 🟠', 'emoji': '🟠', 'trade_type': 'SHORT', 'description': 'زخم هبوطي واضح.', 'confidence': 'عالية', 'score': score}
+        else: return {'action': 'افتح بيع (Short) قوي 🔴', 'emoji': '🔴', 'trade_type': 'SHORT', 'description': 'زخم هبوطي قوي جداً.', 'confidence': 'عالية جداً', 'score': score}
+    except: return {'action': 'انتظار ', 'emoji': '⚪', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
 
 def unified_analysis(symbol):
     try:
         data = fetch_data(symbol)
-        if not data or len(data['closes']) < 50:
-            return None
+        if not data or len(data['closes']) < 50: return None
         closes = data['closes']
         highs = data['highs']
         lows = data['lows']
         volumes = data.get('volumes', [])
         current_price = float(closes[-1])
-        if np.isnan(current_price) or current_price <= 0:
-            return None
+        if np.isnan(current_price) or current_price <= 0: return None
+        
         rsi = calc_rsi(closes)
         ema20 = calc_ema(closes, 20)
         ema50 = calc_ema(closes, 50)
@@ -692,12 +672,17 @@ def unified_analysis(symbol):
         vfm_data = calc_vector_flow_model(closes, volumes)
         order_book = fetch_order_book(symbol)
         ob_analysis = analyze_order_book(order_book) if order_book else None
+        
+        # ✅ التحليل التفاضلي المتقدم (جديد)
+        diff_analysis = advanced_differential_analysis(closes, volumes)
+        
         vol_msg = "محايد"
         if len(volumes) >= 20:
             recent_vol = np.mean(volumes[-5:])
             avg_vol = np.mean(volumes[-20:])
             if recent_vol > avg_vol * 1.2: vol_msg = "مرتفع 📈"
             elif recent_vol < avg_vol * 0.8: vol_msg = "منخفض 📉"
+        
         buy_signals = 0
         if current_price > ema20: buy_signals += 1
         if current_price > ema50: buy_signals += 1
@@ -707,12 +692,14 @@ def unified_analysis(symbol):
         if ou['z_score'] < 1.5: buy_signals += 1
         if vgs_data['direction'] == 'صعودي 🟢' and vgs_data['vgs'] > 0.05: buy_signals += 1
         if vfm_data['divergence'] > 0.05 and vfm_data['flux'] > 0: buy_signals += 1
+        
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
         recommendation = get_action_recommendation({
             'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc,
             'direction': direction, 'buy_signals': buy_signals, 'ob_analysis': ob_analysis
         })
         trade_type = recommendation.get('trade_type', 'WAIT')
+        
         if direction == 'شراء':
             sl = current_price - (atr * 1.0)
             tp1 = current_price + (atr * 1.5)
@@ -734,32 +721,38 @@ def unified_analysis(symbol):
                 tp1 = current_price + (atr * 1.5)
                 tp2 = current_price + (atr * 2.5)
                 tp3 = current_price + (atr * 4.0)
+        
         rr = abs(tp1 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
+        
         return {
-            'symbol': symbol, 'price': current_price, 'rsi': rsi,
-            'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
-            'ou': ou, 'kelly': kelly, 'mc': mc, 'vol_msg': vol_msg,
-            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
-            'rr': rr, 'news': news, 'buy_signals': buy_signals,
-            'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': recommendation, 
-            'trade_type': trade_type, 'order_book': order_book, 'ob_analysis': ob_analysis
+            'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 
+            'macd': macd, 'atr': atr, 'ou': ou, 'kelly': kelly, 'mc': mc, 'vol_msg': vol_msg,
+            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 
+            'news': news, 'buy_signals': buy_signals, 'vgs': vgs_data, 'vfm': vfm_data, 
+            'recommendation': recommendation, 'trade_type': trade_type, 
+            'order_book': order_book, 'ob_analysis': ob_analysis,
+            'diff_analysis': diff_analysis  # ✅ جديد
         }
     except Exception as e:
         logger.error(f"Analysis error {symbol}: {e}")
         return None
 
 def ask_qwen(data):
-    if not OPENROUTER_API_KEY:
-        return None
+    if not OPENROUTER_API_KEY: return None
     try:
         news_text = "\n".join(data.get('news', ['لا توجد أخبار']))
         vgs = data.get('vgs', {})
         vfm = data.get('vfm', {})
         rec = data.get('recommendation', {})
         ob_an = data.get('ob_analysis', {})
+        da = data.get('diff_analysis', {})
+        
         ob_text = ""
         if ob_an:
-            ob_text = f"\nضغط الشراء: {ob_an.get('buy_pressure', 0):.1f}%\nضغط البيع: {ob_an.get('sell_pressure', 0):.1f}%\nإشارة Order Book: {ob_an.get('signal', 'لا بيانات')}\nالمصدر: {ob_an.get('source', 'غير معروف')}"
+            ob_text = f"\nضغط الشراء: {ob_an.get('buy_pressure', 0):.1f}%\nضغط البيع: {ob_an.get('sell_pressure', 0):.1f}%\nإشارة Order Book: {ob_an.get('signal', 'لا بيانات')}"
+        
+        diff_text = f"\nالإشارة التفاضلية: {da.get('final_signal', 0):.2f}\nالثقة: {da.get('confidence', 0)*100:.0f}%"
+        
         prompt = f"""أنت محلل مالي خبير. حلل البيانات التالية بالعربية:
 
 الرمز: {data['symbol']}
@@ -773,8 +766,7 @@ Kelly: {data['kelly']['kelly_half']*100:.1f}%
 احتمال الربح: {data['mc']['prob_profit']:.1f}%
 حجم التداول: {data['vol_msg']}
 VGS: {vgs.get('vgs', 0):.3f} - {vgs.get('direction', 'محايد')}
-VFM: {vfm.get('signal', 'محايد')}
-{ob_text}
+VFM: {vfm.get('signal', 'محايد')}{ob_text}{diff_text}
 التوصية: {rec.get('action', 'انتظار')} (نقاط: {rec.get('score', 0)})
 
 الأخبار: {news_text}
@@ -786,26 +778,15 @@ VFM: {vfm.get('signal', 'محايد')}
 4. نصيحة عملية
 
 ⚠️ ليس نصيحة مالية."""
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/tysear/trading-bot",
-            "X-Title": "Trading Bot"
-        }
-        payload = {
-            "model": "qwen/qwen-2.5-72b-instruct",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3, "max_tokens": 1000
-        }
+        headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/tysear/trading-bot", "X-Title": "Trading Bot"}
+        payload = {"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 1000}
         res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=45)
         if res.status_code == 200:
             result = res.json()
             if 'choices' in result and len(result['choices']) > 0:
                 return result['choices'][0]['message']['content']
         return None
-    except Exception as e:
-        logger.error(f"Qwen error: {e}")
-        return None
+    except: return None
 
 def send_unified_report(data, ai_analysis=None):
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
@@ -817,12 +798,13 @@ def send_unified_report(data, ai_analysis=None):
     rec = data.get('recommendation', {})
     ob = data.get('order_book')
     ob_an = data.get('ob_analysis')
+    da = data.get('diff_analysis', {})
     
     part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
- <b>الاتجاه:</b> {direction_display}
+📊 <b>الاتجاه:</b> {direction_display}
 
 📈 <b>التحليل الفني:</b>
 • RSI: {data['rsi']:.1f}
@@ -847,7 +829,7 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part2)
     
     part_vgs = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-📐 المعادلة: ‖f‖ = √((∂f/∂P)² + (∂f/V)² + (∂f/∂R)² + (∂f/∂M)²)
+📐 المعادلة: ‖∇f‖ = √((∂f/∂P)² + (∂f/∂V)² + (f/∂R)² + (∂f/∂M)²)
 
 • معيار التدرج ‖∇f‖: {vgs.get('vgs', 0):.3f}
 • القوة: {vgs.get('strength', 'محايد')}
@@ -861,7 +843,7 @@ def send_unified_report(data, ai_analysis=None):
     send_long_report(part_vgs)
     
     part_vfm = f"""🌊 <b>نموذج التدفق المتجهي (VFM):</b>
-📐 المعادلات: ∇·F (التباعد)، |∇×F| (الالتواء)، Φ (التدفق)
+ المعادلات: ∇·F (التباعد)، |∇×F| (الالتواء)، Φ (التدفق)
 
 • التباعد (∇·F): {vfm.get('divergence', 0):.3f}
 • الالتواء (|∇×F|): {vfm.get('curl', 0):.3f}
@@ -871,6 +853,41 @@ def send_unified_report(data, ai_analysis=None):
 
 💡 <i>التباعد الإيجابي = أموال تدخل الأصل.</i>"""
     send_long_report(part_vfm)
+    
+    # ✅ قسم التحليل التفاضلي المتقدم (جديد!)
+    osc = da.get('oscillator', {})
+    diff = da.get('diffusion', {})
+    forced = da.get('forced', {})
+    
+    part_diff = f"""{'='*45}
+🔬 <b>التحليل التفاضلي المتقدم (للمراقبة):</b>
+{'='*45}
+
+🌀 <b>1. المذبذب التوافقي (Damped Oscillator):</b>
+• الحالة: {osc.get('regime', 'N/A')}
+• الموقع في الدورة: {osc.get('position', 'N/A')}
+• نسبة التخميد: {osc.get('damping', 0):.2f}
+• التنبؤ بالسعر: ${osc.get('prediction', 0):,.2f}
+
+🌊 <b>2. نموذج الانتشار (Diffusion Model):</b>
+• معامل الانتشار (D): {diff.get('D', 0):.4f}
+• تقعر السعر (Curvature): {diff.get('curvature', 0):.5f}
+• قوة الإشارة: {diff.get('strength', 0)*100:.1f}%
+• الاتجاه المتوقع: {'صعودي 🟢' if diff.get('signal', 0) > 0 else 'هبوطي 🔴' if diff.get('signal', 0) < 0 else 'محايد '}
+
+⚡ <b>3. الحركة تحت قوة خارجية (Forced Motion):</b>
+• القوة الداخلية (العرض/الطلب): {forced.get('internal_force', 0):.4f}
+• القوة الخارجية (أخبار/صدمات): {forced.get('external_force', 0):.4f}
+• هل تسيطر الأخبار؟: {'نعم ⚠️' if forced.get('news_dominance', False) else 'لا ✅'}
+• التنبؤ بالسعر: ${forced.get('prediction', 0):,.2f}
+
+🎯 <b>الإشارة التفاضلية النهائية:</b>
+• القيمة: {da.get('final_signal', 0):.2f} ({'صعودي 🟢' if da.get('final_signal', 0) > 0.2 else 'هبوطي 🔴' if da.get('final_signal', 0) < -0.2 else 'محايد ⚪'})
+• مستوى الثقة: {da.get('confidence', 0)*100:.0f}%
+
+💡 <i>هذا القسم للمراقبة فقط حالياً ولا يؤثر على التوصية النهائية.
+المذبذب يكتشف الدورات، الانتشار يقيس تدفق السيولة، والحركة القسرية تقيس تأثير الصدمات الخارجية.</i>"""
+    send_long_report(part_diff)
     
     if ob and ob_an:
         est_mark = " ️ (تقديري)" if ob_an.get('estimated') else ""
@@ -885,30 +902,28 @@ def send_unified_report(data, ai_analysis=None):
 
 ⚖️ <b>توازن القوى:</b>
 • ضغط الشراء: {ob_an['buy_pressure']:.1f}% {'🟢' if ob_an['buy_pressure'] > 55 else ''}
-• ضغط البيع: {ob_an['sell_pressure']:.1f}% {'🔴' if ob_an['sell_pressure'] > 55 else ''}
+• ضغط البيع: {ob_an['sell_pressure']:.1f}% {'' if ob_an['sell_pressure'] > 55 else ''}
 • الإشارة: {ob_an['signal']}
 • القوة: {ob_an['strength']}
 
 📈 <b>مستويات السيولة الكبيرة:</b>
 """
         if ob['support_levels']:
-            ob_text += "🟢 <b>دعم قوي (تجمعات شراء):</b>\n"
+            ob_text += " <b>دعم قوي (تجمعات شراء):</b>\n"
             for i, sup in enumerate(ob['support_levels'], 1):
                 ob_text += f"  {i}. ${sup['price']:,.4f} (حجم: {sup['volume']:,.2f})\n"
-        else:
-            ob_text += "⚪ لا توجد تجمعات شراء كبيرة\n"
+        else: ob_text += "⚪ لا توجد تجمعات شراء كبيرة\n"
         if ob['resistance_levels']:
             ob_text += "\n🔴 <b>مقاومة قوية (تجمعات بيع):</b>\n"
             for i, res in enumerate(ob['resistance_levels'], 1):
                 ob_text += f"  {i}. ${res['price']:,.4f} (حجم: {res['volume']:,.2f})\n"
-        else:
-            ob_text += "\n⚪ لا توجد تجمعات بيع كبيرة\n"
+        else: ob_text += "\n⚪ لا توجد تجمعات بيع كبيرة\n"
         ob_text += f"""
 💡 <i>ضغط الشراء > 60% = أموال تدخل (إيجابي)
 ضغط البيع > 60% = أموال تخرج (سلبي)</i>"""
         send_long_report(ob_text)
     
-    part_news = f""" <b>آخر الأخبار:</b>
+    part_news = f"""📰 <b>آخر الأخبار:</b>
 {news_text}"""
     send_long_report(part_news)
     
@@ -932,7 +947,7 @@ def send_unified_report(data, ai_analysis=None):
 🎯 <b>توصية الإجراء النهائية:</b>
 {'='*45}
 
-{rec.get('emoji', '')} <b>{rec.get('action', 'انتظار')}</b>
+{rec.get('emoji', '⚪')} <b>{rec.get('action', 'انتظار')}</b>
 
 📋 <b>الوصف:</b> {rec.get('description', '')}
 📊 <b>مستوى الثقة:</b> {rec.get('confidence', 'غير محدد')}
@@ -950,15 +965,13 @@ def smart_analysis(symbol):
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري تحليل Qwen AI...")
         ai = ask_qwen(data)
-        if not ai:
-            send_message("⚠️ فشل تحليل Qwen AI")
+        if not ai: send_message("⚠️ فشل تحليل Qwen AI")
     else:
         send_message("⚠️ مفتاح Qwen غير موجود")
         ai = None
     send_unified_report(data, ai)
 
 def test_order_book():
-    """اختبار Order Book مباشرة"""
     send_message("🔍 <b>جاري اختبار Order Book...</b>")
     test_symbols = ['BTC-USD', 'ETH-USD', 'XRP-USD']
     for symbol in test_symbols:
@@ -970,23 +983,20 @@ def test_order_book():
                 msg = f"✅ <b>{symbol}</b> ({est_mark})\n"
                 msg += f"   📡 المصدر: {ob.get('source', 'غير معروف')}\n"
                 msg += f"   💰 Bid: ${ob['best_bid']:,.2f}\n"
-                msg += f"    Ask: ${ob['best_ask']:,.2f}\n"
-                msg += f"    Spread: {ob['spread_percent']:.3f}%\n"
+                msg += f"   💰 Ask: ${ob['best_ask']:,.2f}\n"
+                msg += f"   📊 Spread: {ob['spread_percent']:.3f}%\n"
                 msg += f"   🟢 ضغط الشراء: {ob['buy_pressure']:.1f}%\n"
                 msg += f"   🔴 ضغط البيع: {ob['sell_pressure']:.1f}%\n"
-                if ob_an:
-                    msg += f"   🎯 الإشارة: {ob_an['signal']}\n"
+                if ob_an: msg += f"   🎯 الإشارة: {ob_an['signal']}\n"
                 send_message(msg)
-            else:
-                send_message(f"❌ <b>{symbol}</b>: فشل في جلب Order Book")
-        except Exception as e:
-            send_message(f"❌ <b>{symbol}</b>: خطأ - {e}")
+            else: send_message(f"❌ <b>{symbol}</b>: فشل في جلب Order Book")
+        except Exception as e: send_message(f"❌ <b>{symbol}</b>: خطأ - {e}")
         time.sleep(1)
 
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL']
         for symbol in symbols:
             try:
@@ -994,17 +1004,12 @@ def simple_report():
                 hist = ticker.history(period="5d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
-                    if not np.isnan(price) and price > 0:
-                        report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
-                    else:
-                        report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
-                else:
-                    report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
-            except:
-                report += f"❌ <b>{symbol}</b>: خطأ\n"
+                    if not np.isnan(price) and price > 0: report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
+                    else: report += f"⚠️ <b>{symbol}</b>: بيانات غير متاحة\n"
+                else: report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
+            except: report += f"❌ <b>{symbol}</b>: خطأ\n"
         send_message(report)
-    except Exception as e:
-        send_message(f"خطأ: {str(e)}")
+    except Exception as e: send_message(f"خطأ: {str(e)}")
 
 def handle_command(command):
     cmd = command.strip().lower()
@@ -1026,8 +1031,7 @@ def handle_command(command):
         smart_analysis(symbol)
     elif cmd == '/help':
         send_message("<b>الأوامر:</b>\n/smart <رمز> - تحليل شامل\n/test_ob - اختبار Order Book\n/test_report - تقرير بسيط\n/help - مساعدة")
-    else:
-        send_message("استخدم /help")
+    else: send_message("استخدم /help")
 
 def listen():
     last_id = 0
@@ -1045,12 +1049,11 @@ def listen():
                             if chat_id == CHAT_ID:
                                 handle_command(update['message']['text'])
                         last_id = update['update_id']
-        except Exception as e:
-            logger.error(f"Listen error: {e}")
+        except Exception as e: logger.error(f"Listen error: {e}")
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Trading Bot with Safe Order Book + Fallbacks...")
+    logger.info("Starting Unified Trading Bot with Advanced Differential Analysis...")
     logger.info(f"✅ Supported crypto for Order Book: {len(CRYPTO_SYMBOLS)} symbols")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
