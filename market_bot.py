@@ -106,11 +106,9 @@ def monitor_urgent_news():
                             save_alerted_news(original)
         except Exception as e: logger.error(f"News monitor error: {e}")
 
-# ✅ تم التحديث لدعم التايم فريم
 def fetch_data(symbol, interval="1h"):
     try:
         ticker = yf.Ticker(symbol)
-        # للمتداول اليومي: نأخذ بيانات آخر شهر حسب الإطار الزمني المختار
         hist = ticker.history(period="1mo", interval=interval)
         if hist.empty: return None
         closes, highs, lows, volumes = hist['Close'].tolist(), hist['High'].tolist(), hist['Low'].tolist(), hist['Volume'].tolist()
@@ -150,7 +148,7 @@ def analyze_order_book(ob):
     if not ob: return None
     bp, sp = ob['buy_pressure'], ob['sell_pressure']
     if bp > 65: sig, strn = 'ضغط شراء قوي 🟢', 'قوي'
-    elif bp > 55: sig, strn = 'ضغط شراء معتدل 🟢', 'متوسط'
+    elif bp > 55: sig, strn = 'ضغط شراء معتدل ', 'متوسط'
     elif sp > 65: sig, strn = 'ضغط بيع قوي 🔴', 'قوي'
     elif sp > 55: sig, strn = 'ضغط بيع معتدل 🔴', 'متوسط'
     else: sig, strn = 'توازن ⚪', 'ضعيف'
@@ -167,7 +165,7 @@ def calc_damped_oscillator(closes, period=20):
         gamma = abs(-ypp[-1] - omega_sq * y[-1]) / (2 * abs(yp[-1])) if abs(yp[-1]) > 1e-10 else 0.3
         damp = gamma / (2 * np.sqrt(omega_sq))
         phase = np.arctan2(yp[-1], y[-1])
-        pos = 'قاع 📈' if np.pi/2 < phase < 3*np.pi/2 else 'قمة 📉'
+        pos = 'قاع ' if np.pi/2 < phase < 3*np.pi/2 else 'قمة 📉'
         return {'regime': 'تذبذب نشط 🌀' if damp < 1 else 'تخميد عالي 🛑', 'position': pos, 'damping': damp, 'prediction': fv + y[-1] + yp[-1] + 0.5*ypp[-1]}
     except: return {'regime': 'N/A', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
 
@@ -239,13 +237,13 @@ def calc_kelly(prices):
     try:
         closes = np.array(prices, dtype=float)
         closes = closes[~np.isnan(closes)]
-        if len(closes) < 10: return {'win_rate': 0.5, 'kelly_safe': 0.05} # خفضت الحد الأدنى للمتداول اليومي
+        if len(closes) < 10: return {'win_rate': 0.5, 'kelly_safe': 0.05}
         wins = sum(1 for i in range(-min(50, len(closes)-5), -5) if closes[i+5] > closes[i])
         total = min(50, len(closes) - 5)
         win_rate = wins / total if total > 0 else 0.5
         edge = (win_rate * 2.0) - (1 - win_rate)
         kelly_full = edge / 2.0 if 2.0 > 0 else 0
-        safe_kelly = max(0.02, min(kelly_full * 0.5, 0.15)) # ✅ حد أقصى 15% للتداول اليومي (أكثر أماناً)
+        safe_kelly = max(0.02, min(kelly_full * 0.5, 0.15))
         return {'win_rate': win_rate, 'kelly_safe': safe_kelly}
     except: return {'win_rate': 0.5, 'kelly_safe': 0.05}
 
@@ -285,7 +283,7 @@ def calc_vgs(closes, volumes):
         vgs = np.sqrt(gpw**2 + gvw**2 + grw**2 + gmw**2)
         ds = gpw + gvw + grw + gmw
         
-        strength = 'قوي جداً 🔥' if vgs > 0.15 else 'قوي 💪' if vgs > 0.08 else 'متوسط ⚪' if vgs > 0.03 else 'ضعيف ⚪'
+        strength = 'قوي جداً ' if vgs > 0.15 else 'قوي 💪' if vgs > 0.08 else 'متوسط ⚪' if vgs > 0.03 else 'ضعيف ⚪'
         direction = 'صعودي 🟢' if ds > 0.02 else 'هبوطي 🔴' if ds < -0.02 else 'محايد ⚪'
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength, 'grad_P': float(gpw), 'grad_V': float(gvw), 'grad_R': float(grw), 'grad_M': float(gmw), 'direction_score': float(ds)}
     except: return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
@@ -376,7 +374,7 @@ def get_action_recommendation(data):
             veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقاع! تم إلغاء Short."
         elif reversal_signals >= 2 and score > 2:
             score = 0
-            veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقمة! تم إلغاء Long."
+            veto_warning = f" فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقمة! تم إلغاء Long."
 
         contradiction_warning = ""
         if diff_sig < -0.3 and score >= 3:
@@ -389,13 +387,16 @@ def get_action_recommendation(data):
             contradiction_warning = f"⚠️ تناقض قوي: التفاضلي صعودي ({diff_sig:.2f})"
             if reversal_signals >= 2: score = max(score, -1)
 
+        # ✅ حماية RSI المحسّنة - تعمل دائماً
         rsi_warning = ""
-        if rsi < 30 and score < -2:
-            score = max(score, -1)
-            rsi_warning = f"⚠️ RSI منخفض ({rsi:.1f}): تشبع بيعي، ارتداد محتمل! تم تخفيف Short."
-        elif rsi > 70 and score > 2:
-            score = min(score, 1)
+        if rsi > 70:
+            if score > 0:
+                score = min(score, 0)
             rsi_warning = f"⚠️ RSI مرتفع ({rsi:.1f}): تشبع شرائي، انعكاس محتمل! تم تخفيف Long."
+        elif rsi < 30:
+            if score < 0:
+                score = max(score, 0)
+            rsi_warning = f"️ RSI منخفض ({rsi:.1f}): تشبع بيعي، ارتداد محتمل! تم تخفيف Short."
 
         if score >= 6: action, emoji, conf = 'افتح شراء (Long) قوي 🟢', '🟢', 'عالية جداً'
         elif score >= 3: action, emoji, conf = 'افتح شراء (Long) 🟢', '🟢', 'عالية'
@@ -415,7 +416,7 @@ def get_action_recommendation(data):
                 'description': desc, 'confidence': conf, 'score': score}
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
-        return {'action': 'انتظار ⚪', 'emoji': '⚪', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
+        return {'action': 'انتظار ⚪', 'emoji': '', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
 
 def unified_analysis(symbol, interval="1h"):
     try:
@@ -438,7 +439,7 @@ def unified_analysis(symbol, interval="1h"):
         ob_an = analyze_order_book(ob) if ob else None
         diff_an = advanced_differential_analysis(closes, volumes)
         
-        vol_msg = "مرتفع 📈" if len(volumes)>=20 and np.mean(volumes[-5:]) > np.mean(volumes[-20:])*1.2 else "منخفض 📉" if len(volumes)>=20 and np.mean(volumes[-5:]) < np.mean(volumes[-20:])*0.8 else "محايد ⚪"
+        vol_msg = "مرتفع " if len(volumes)>=20 and np.mean(volumes[-5:]) > np.mean(volumes[-20:])*1.2 else "منخفض " if len(volumes)>=20 and np.mean(volumes[-5:]) < np.mean(volumes[-20:])*0.8 else "محايد "
         
         buy_signals = sum([current_price > ema20, current_price > ema50, macd > 0, rsi < 75, mc['prob_profit'] > 55, vgs_data['direction']=='صعودي 🟢' and vgs_data['vgs']>0.05, vfm_data['divergence']>0.05 and vfm_data['flux']>0])
         direction = 'شراء' if buy_signals >= 4 else ('بيع' if buy_signals <= 2 else 'انتظار')
@@ -446,13 +447,12 @@ def unified_analysis(symbol, interval="1h"):
         rec = get_action_recommendation({'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc, 
                                          'direction': direction, 'buy_signals': buy_signals, 'ob_analysis': ob_an, 'diff_analysis': diff_an})
         
-        # ✅ تم تعديل مضاعفات ATR لتناسب التداول اليومي (أضيق قليلاً)
         if direction == 'شراء':
             sl, tp1, tp2, tp3 = current_price - (atr * 0.8), current_price + (atr * 1.2), current_price + (atr * 2.0), current_price + (atr * 3.0)
         elif direction == 'بيع':
             sl, tp1, tp2, tp3 = current_price + (atr * 0.8), current_price - (atr * 1.2), current_price - (atr * 2.0), current_price - (atr * 3.0)
         else:
-            if vgs_data['direction'] == 'هبوطي 🔴':
+            if vgs_data['direction'] == 'هبوطي ':
                 sl, tp1, tp2, tp3 = current_price + (atr * 0.8), current_price - (atr * 1.2), current_price - (atr * 2.0), current_price - (atr * 3.0)
             else:
                 sl, tp1, tp2, tp3 = current_price - (atr * 0.8), current_price + (atr * 1.2), current_price + (atr * 2.0), current_price + (atr * 3.0)
@@ -497,12 +497,12 @@ def send_unified_report(data, ai_analysis=None):
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
-📊 <b>الاتجاه:</b> {dir_display}
+ <b>الاتجاه:</b> {dir_display}
 
 💰 <b>مستويات التداول (اليومي):</b>
 🛑 وقف الخسارة (SL): ${data['sl']:,.2f}
 🎯 الهدف 1 (TP1): ${data['tp1']:,.2f}
-🎯 الهدف 2 (TP2): ${data['tp2']:,.2f}
+ الهدف 2 (TP2): ${data['tp2']:,.2f}
 🎯 الهدف 3 (TP3): ${data['tp3']:,.2f}
 ⚖️ المخاطرة/العائد: 1:{data['rr']:.2f}
 
@@ -514,11 +514,11 @@ def send_unified_report(data, ai_analysis=None):
 • ATR: ${data['atr']:,.2f}
 • حجم التداول: {data['vol_msg']}
 
-💰 <b>Kelly الآمن:</b> {kelly.get('kelly_safe', 0)*100:.1f}% (حد أقصى 15% لليومي)
+ <b>Kelly الآمن:</b> {kelly.get('kelly_safe', 0)*100:.1f}% (حد أقصى 15% لليومي)
 🎲 <b>مونت كارلو:</b> ربح {mc.get('prob_profit',0):.1f}% | خسارة 10%+ {mc.get('prob_loss_10',0):.1f}%"""
     send_long_report(part1)
     
-    part2 = f"""🎯 <b>قوة الاتجاه (VGS):</b> ‖∇f‖ = {vgs.get('vgs',0):.3f} ({vgs.get('strength','')}) - {vgs.get('direction','')}
+    part2 = f"""🎯 <b>قوة الاتجاه (VGS):</b> ‖f‖ = {vgs.get('vgs',0):.3f} ({vgs.get('strength','')}) - {vgs.get('direction','')}
 🌊 <b>التدفق (VFM):</b> تباعد: {vfm.get('divergence',0):.3f} | تدفق: {vfm.get('flux',0):.2f} - {vfm.get('signal','')}"""
     send_long_report(part2)
     
@@ -552,7 +552,7 @@ def send_unified_report(data, ai_analysis=None):
         send_long_report(part6)
     
     part7 = f"""{'='*45}
-🎯 <b>التوصية النهائية:</b>
+ <b>التوصية النهائية:</b>
 {'='*45}
 
 {rec.get('emoji','⚪')} <b>{rec.get('action','انتظار')}</b>
@@ -560,7 +560,7 @@ def send_unified_report(data, ai_analysis=None):
 📋 {rec.get('description','')}
 📊 الثقة: {rec.get('confidence','غير محدد')}
 
-💰 <b>تذكير بمستويات التداول:</b>
+ <b>تذكير بمستويات التداول:</b>
 🛑 SL: ${data['sl']:,.2f}
 🎯 TP1: ${data['tp1']:,.2f}
 
@@ -599,7 +599,7 @@ def test_order_book():
 def simple_report():
     try:
         report = "📊 <b>تقرير السوق</b>\n\n"
-        report += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        report += f" {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         for symbol in ['BTC-USD', 'ETH-USD', 'AAPL']:
             try:
                 ticker = yf.Ticker(symbol)
@@ -608,8 +608,8 @@ def simple_report():
                     price = hist['Close'].iloc[-1]
                     if not np.isnan(price) and price > 0: report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
                     else: report += f"⚠️ <b>{symbol}</b>: غير متاح\n"
-                else: report += f"⚠️ <b>{symbol}</b>: لا بيانات\n"
-            except: report += f"❌ <b>{symbol}</b>: خطأ\n"
+                else: report += f"️ <b>{symbol}</b>: لا بيانات\n"
+            except: report += f" <b>{symbol}</b>: خطأ\n"
         send_message(report)
     except Exception as e: send_message(f"خطأ: {str(e)}")
 
@@ -618,7 +618,7 @@ def handle_command(command):
     if cmd == '/start':
         send_message("🤖 <b>بوت التداول اليومي الذكي</b>\n\nالأوامر:\n/smart <رمز> [تايم_فريم] - تحليل شامل\nأمثلة:\n/smart BTC-USD 1h (ساعة - افتراضي)\n/smart XRP-USD 15m (15 دقيقة)\n/smart ETH-USD 4h (4 ساعات)\n/test_ob - اختبار Order Book\n/help - المساعدة")
     elif cmd == '/test_ob':
-        send_message("🔍 جاري اختبار Order Book...")
+        send_message(" جاري اختبار Order Book...")
         test_order_book()
     elif cmd == '/test_report':
         send_message("⏳ جاري...")
@@ -626,15 +626,14 @@ def handle_command(command):
     elif cmd.startswith('/smart'):
         parts = command.split(' ')
         if len(parts) < 2:
-            send_message("الاستخدام: /smart <رمز> [تايم_فريم]\nمثال: /smart BTC-USD 1h\nمثال: /smart XRP-USD 15m")
+            send_message("الاستخدام: /smart <رمز> [تايم_فريم]\nمثال: /smart BTC-USD 1h\nمثال: /smart XRP-USD 4h")
             return
         
         symbol = parts[1].strip().upper().replace(' ', '')
-        # ✅ دعم اختيار التايم فريم، والافتراضي 1h للمتداول اليومي
         interval = parts[2].strip().lower() if len(parts) > 2 else "1h"
         
-        # التحقق من صحة التايم فريم
-        valid_intervals = ['1m', '2m', '5m', '15m', '30m', '60m', '1h', '90m', '1d', '5d', '1wk', '1mo']
+        # ✅ قائمة التايم فريمات المدعومة - تم إضافة 4h
+        valid_intervals = ['1m', '2m', '5m', '15m', '30m', '60m', '1h', '4h', '90m', '1d', '5d', '1wk', '1mo']
         if interval not in valid_intervals:
             send_message(f"⚠️ تايم فريم غير مدعوم. استخدم: 15m, 1h, 4h, 1d")
             return
@@ -657,7 +656,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Day-Trading Optimized Bot with Multi-Timeframe Support...")
+    logger.info("Starting Day-Trading Bot with Enhanced RSI Protection...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
