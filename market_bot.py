@@ -106,24 +106,23 @@ def monitor_urgent_news():
                             save_alerted_news(original)
         except Exception as e: logger.error(f"News monitor error: {e}")
 
-def fetch_data(symbol):
+# ✅ تم التحديث لدعم التايم فريم
+def fetch_data(symbol, interval="1h"):
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="3mo")
+        # للمتداول اليومي: نأخذ بيانات آخر شهر حسب الإطار الزمني المختار
+        hist = ticker.history(period="1mo", interval=interval)
         if hist.empty: return None
         closes, highs, lows, volumes = hist['Close'].tolist(), hist['High'].tolist(), hist['Low'].tolist(), hist['Volume'].tolist()
         cleaned = [{'close': c, 'high': h, 'low': l, 'volume': v} for c, h, l, v in zip(closes, highs, lows, volumes) 
                    if not np.isnan(c) and not np.isnan(h) and not np.isnan(l) and not np.isnan(v) and c > 0]
         if len(cleaned) < 50: return None
         return {'closes': [d['close'] for d in cleaned], 'highs': [d['high'] for d in cleaned], 
-                'lows': [d['low'] for d in cleaned], 'volumes': [d['volume'] for d in cleaned]}
+                'lows': [d['low'] for d in cleaned], 'volumes': [d['volume'] for d in cleaned], 'interval': interval}
     except Exception as e:
         logger.error(f"Fetch error {symbol}: {e}")
         return None
 
-# ══════════════════════════════════════════
-# ORDER BOOK
-# ══════════════════════════════════════════
 def fetch_order_book(symbol):
     if symbol not in CRYPTO_SYMBOLS: return None
     binance_symbol = symbol.replace('-USD', 'USDT')
@@ -158,9 +157,6 @@ def analyze_order_book(ob):
     spr_st = 'ضيق ✅' if ob['spread_percent'] < 0.1 else 'واسع ⚠️' if ob['spread_percent'] > 0.5 else 'عادي'
     return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'spread_status': spr_st, 'source': ob.get('source'), 'estimated': ob.get('estimated')}
 
-# ══════════════════════════════════════════
-# DIFFERENTIAL ANALYSIS
-# ══════════════════════════════════════════
 def calc_damped_oscillator(closes, period=20):
     try:
         prices = np.array(closes[-period:], dtype=float)
@@ -206,9 +202,6 @@ def advanced_differential_analysis(closes, volumes):
         return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 'final_signal': np.mean(signals) if signals else 0, 'confidence': len(signals) / 3.0}
     except: return {'oscillator': {}, 'diffusion': {}, 'forced': {}, 'final_signal': 0, 'confidence': 0}
 
-# ══════════════════════════════════════════
-# BASIC INDICATORS
-# ══════════════════════════════════════════
 def fetch_news(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -246,16 +239,15 @@ def calc_kelly(prices):
     try:
         closes = np.array(prices, dtype=float)
         closes = closes[~np.isnan(closes)]
-        if len(closes) < 10: return {'win_rate': 0.5, 'kelly_safe': 0.10}
+        if len(closes) < 10: return {'win_rate': 0.5, 'kelly_safe': 0.05} # خفضت الحد الأدنى للمتداول اليومي
         wins = sum(1 for i in range(-min(50, len(closes)-5), -5) if closes[i+5] > closes[i])
         total = min(50, len(closes) - 5)
         win_rate = wins / total if total > 0 else 0.5
         edge = (win_rate * 2.0) - (1 - win_rate)
         kelly_full = edge / 2.0 if 2.0 > 0 else 0
-        # ✅ حماية صارمة: الحد الأقصى 25%، الأدنى 5%
-        safe_kelly = max(0.05, min(kelly_full * 0.5, 0.25))
+        safe_kelly = max(0.02, min(kelly_full * 0.5, 0.15)) # ✅ حد أقصى 15% للتداول اليومي (أكثر أماناً)
         return {'win_rate': win_rate, 'kelly_safe': safe_kelly}
-    except: return {'win_rate': 0.5, 'kelly_safe': 0.10}
+    except: return {'win_rate': 0.5, 'kelly_safe': 0.05}
 
 def monte_carlo(prices, days=30, simulations=500):
     try:
@@ -331,14 +323,11 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(div), 'curl': float(curl), 'flux': float(flux), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
-# ══════════════════════════════════════════
-# RECOMMENDATION WITH ADVANCED SAFETY (VETO SYSTEM)
-# ══════════════════════════════════════════
 def get_action_recommendation(data):
     try:
         vgs, vfm = data.get('vgs', {}), data.get('vfm', {})
         rsi = data.get('rsi', 50)
-        kelly = data.get('kelly', {}).get('kelly_safe', 0.1)
+        kelly = data.get('kelly', {}).get('kelly_safe', 0.05)
         mc_prob = data.get('mc', {}).get('prob_profit', 50)
         direction = data.get('direction', 'انتظار')
         buy_signals = data.get('buy_signals', 0)
@@ -376,22 +365,19 @@ def get_action_recommendation(data):
         if buy_signals >= 6: score += 1
         elif buy_signals <= 2: score -= 1
 
-        # ✅ نظام الفيتو الانعكاسي (Reversal Veto)
         veto_warning = ""
         reversal_signals = 0
-        
         if 'قاع' in osc.get('position', ''): reversal_signals += 1
         if diff_model.get('signal', 0) > 0 and diff_model.get('strength', 0) > 0.3: reversal_signals += 1
         if diff_sig > 0.5 and diff_conf > 0.5: reversal_signals += 1
         
         if reversal_signals >= 2 and score < -2:
             score = 0
-            veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج رياضية تشير لقاع وارتداد وشيك! تم إلغاء Short."
+            veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقاع! تم إلغاء Short."
         elif reversal_signals >= 2 and score > 2:
             score = 0
-            veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج رياضية تشير لقمة! تم إلغاء Long."
+            veto_warning = f"🚫 فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقمة! تم إلغاء Long."
 
-        # ✅ نظام التناقض المحسّن
         contradiction_warning = ""
         if diff_sig < -0.3 and score >= 3:
             penalty = 4 if diff_conf > 0.6 else 3
@@ -403,7 +389,6 @@ def get_action_recommendation(data):
             contradiction_warning = f"⚠️ تناقض قوي: التفاضلي صعودي ({diff_sig:.2f})"
             if reversal_signals >= 2: score = max(score, -1)
 
-        # ✅ حماية RSI الموسعة
         rsi_warning = ""
         if rsi < 30 and score < -2:
             score = max(score, -1)
@@ -432,9 +417,9 @@ def get_action_recommendation(data):
         logger.error(f"Recommendation error: {e}")
         return {'action': 'انتظار ⚪', 'emoji': '⚪', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0}
 
-def unified_analysis(symbol):
+def unified_analysis(symbol, interval="1h"):
     try:
-        data = fetch_data(symbol)
+        data = fetch_data(symbol, interval)
         if not data or len(data['closes']) < 50: return None
         closes, highs, lows, volumes = data['closes'], data['highs'], data['lows'], data.get('volumes', [])
         current_price = float(closes[-1])
@@ -461,19 +446,20 @@ def unified_analysis(symbol):
         rec = get_action_recommendation({'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc, 
                                          'direction': direction, 'buy_signals': buy_signals, 'ob_analysis': ob_an, 'diff_analysis': diff_an})
         
+        # ✅ تم تعديل مضاعفات ATR لتناسب التداول اليومي (أضيق قليلاً)
         if direction == 'شراء':
-            sl, tp1, tp2, tp3 = current_price - atr, current_price + atr*1.5, current_price + atr*2.5, current_price + atr*4.0
+            sl, tp1, tp2, tp3 = current_price - (atr * 0.8), current_price + (atr * 1.2), current_price + (atr * 2.0), current_price + (atr * 3.0)
         elif direction == 'بيع':
-            sl, tp1, tp2, tp3 = current_price + atr, current_price - atr*1.5, current_price - atr*2.5, current_price - atr*4.0
+            sl, tp1, tp2, tp3 = current_price + (atr * 0.8), current_price - (atr * 1.2), current_price - (atr * 2.0), current_price - (atr * 3.0)
         else:
             if vgs_data['direction'] == 'هبوطي 🔴':
-                sl, tp1, tp2, tp3 = current_price + atr, current_price - atr*1.5, current_price - atr*2.5, current_price - atr*4.0
+                sl, tp1, tp2, tp3 = current_price + (atr * 0.8), current_price - (atr * 1.2), current_price - (atr * 2.0), current_price - (atr * 3.0)
             else:
-                sl, tp1, tp2, tp3 = current_price - atr, current_price + atr*1.5, current_price + atr*2.5, current_price + atr*4.0
+                sl, tp1, tp2, tp3 = current_price - (atr * 0.8), current_price + (atr * 1.2), current_price + (atr * 2.0), current_price + (atr * 3.0)
         
         rr = abs(tp1 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         
-        return {'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr,
+        return {'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr, 'interval': interval,
                 'kelly': kelly, 'mc': mc, 'vol_msg': vol_msg, 'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr,
                 'news': news, 'buy_signals': buy_signals, 'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': rec,
                 'order_book': ob, 'ob_analysis': ob_an, 'diff_analysis': diff_an}
@@ -484,11 +470,10 @@ def unified_analysis(symbol):
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: return None
     try:
-        prompt = f"""أنت محلل مالي خبير. رمز: {data['symbol']}, السعر: ${data['price']:,.2f}, RSI: {data['rsi']:.1f}, 
+        prompt = f"""أنت محلل مالي خبير للتداول اليومي. رمز: {data['symbol']} (تايم فريم: {data.get('interval', '1h')}), السعر: ${data['price']:,.2f}, RSI: {data['rsi']:.1f}, 
 VGS: {data['vgs'].get('vgs',0):.3f} ({data['vgs'].get('direction','')}), VFM: {data['vfm'].get('signal','')}, 
-Kelly الآمن: {data['kelly'].get('kelly_safe',0)*100:.1f}%, احتمال الربح: {data['mc'].get('prob_profit',0):.1f}%, 
-الإشارة التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}.
-أعطِ: 1. القرار 2. التفسير 3. المخاطر 4. نصيحة. ⚠️ ليس نصيحة مالية."""
+Kelly الآمن: {data['kelly'].get('kelly_safe',0)*100:.1f}%, الإشارة التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}.
+أعطِ: 1. القرار 2. التفسير 3. المخاطر 4. نصيحة عملية سريعة. ⚠️ ليس نصيحة مالية."""
         res = requests.post(OPENROUTER_API_URL, json={"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}, 
                             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}, timeout=45)
         if res.status_code == 200:
@@ -497,9 +482,6 @@ Kelly الآمن: {data['kelly'].get('kelly_safe',0)*100:.1f}%, احتمال ا�
         return None
     except: return None
 
-# ══════════════════════════════════════════
-# REPORT GENERATION (SL/TP AT THE TOP)
-# ══════════════════════════════════════════
 def send_unified_report(data, ai_analysis=None):
     rec = data.get('recommendation', {})
     vgs, vfm = data.get('vgs', {}), data.get('vfm', {})
@@ -507,17 +489,17 @@ def send_unified_report(data, ai_analysis=None):
     da = data.get('diff_analysis', {})
     kelly = data.get('kelly', {})
     mc = data.get('mc', {})
+    interval = data.get('interval', '1h').upper()
     
     dir_display = 'شراء 🟢' if data['direction']=='شراء' else 'بيع 🔴' if data['direction']=='بيع' else 'انتظار ⚪'
     
-    # ✅ الجزء 1: يحتوي على SL/TP و Kelly في الأعلى
-    part1 = f"""🎯 <b>التقرير الشامل الموحد لـ {data['symbol']}</b>
+    part1 = f"""🎯 <b>التقرير الشامل ({interval}) لـ {data['symbol']}</b>
 {'='*45}
 
 💰 <b>السعر الحالي:</b> ${data['price']:,.2f}
 📊 <b>الاتجاه:</b> {dir_display}
 
-💰 <b>مستويات التداول (الأهم):</b>
+💰 <b>مستويات التداول (اليومي):</b>
 🛑 وقف الخسارة (SL): ${data['sl']:,.2f}
 🎯 الهدف 1 (TP1): ${data['tp1']:,.2f}
 🎯 الهدف 2 (TP2): ${data['tp2']:,.2f}
@@ -532,69 +514,43 @@ def send_unified_report(data, ai_analysis=None):
 • ATR: ${data['atr']:,.2f}
 • حجم التداول: {data['vol_msg']}
 
-💰 <b>Kelly الآمن:</b> {kelly.get('kelly_safe', 0)*100:.1f}% (حد أقصى 25%)
-🎲 <b>مونت كارلو (30 يوم):</b>
-• احتمال الربح: {mc.get('prob_profit',0):.1f}%
-• احتمال خسارة 10%+: {mc.get('prob_loss_10',0):.1f}%
-• نطاق 90%: ${mc.get('p5',0):,.2f} - ${mc.get('p95',0):,.2f}"""
+💰 <b>Kelly الآمن:</b> {kelly.get('kelly_safe', 0)*100:.1f}% (حد أقصى 15% لليومي)
+🎲 <b>مونت كارلو:</b> ربح {mc.get('prob_profit',0):.1f}% | خسارة 10%+ {mc.get('prob_loss_10',0):.1f}%"""
     send_long_report(part1)
     
-    # الجزء 2: VGS + VFM
-    part2 = f"""🎯 <b>قوة الاتجاه المتجهية (VGS):</b>
-• معيار التدرج ‖∇f‖: {vgs.get('vgs',0):.3f}
-• القوة: {vgs.get('strength','محايد')}
-• اتجاه التدرج: {vgs.get('direction','محايد')}
-
-🌊 <b>نموذج التدفق المتجهي (VFM):</b>
-• التباعد (∇·F): {vfm.get('divergence',0):.3f}
-• التدفق (Φ): {vfm.get('flux',0):.2f}
-• الإشارة: {vfm.get('signal','محايد')}"""
+    part2 = f"""🎯 <b>قوة الاتجاه (VGS):</b> ‖∇f‖ = {vgs.get('vgs',0):.3f} ({vgs.get('strength','')}) - {vgs.get('direction','')}
+🌊 <b>التدفق (VFM):</b> تباعد: {vfm.get('divergence',0):.3f} | تدفق: {vfm.get('flux',0):.2f} - {vfm.get('signal','')}"""
     send_long_report(part2)
     
-    # الجزء 3: التحليل التفاضلي
     osc = da.get('oscillator', {})
     diff = da.get('diffusion', {})
     forced = da.get('forced', {})
     
     part3 = f"""{'='*45}
 🔬 <b>التحليل التفاضلي المتقدم:</b>
-{'='*45}
-
-🌀 <b>1. المذبذب التوافقي:</b>
-• الموقع: {osc.get('position','N/A')}
-• التخميد: {osc.get('damping',0):.2f}
-
-🌊 <b>2. نموذج الانتشار:</b>
-• الاتجاه: {'صعودي 🟢' if diff.get('signal',0)>0 else 'هبوطي 🔴' if diff.get('signal',0)<0 else 'محايد ⚪'}
-• قوة الإشارة: {diff.get('strength',0)*100:.1f}%
-
-⚡ <b>3. الحركة القسرية:</b>
-• تسيطر الأخبار؟: {'نعم ⚠️' if forced.get('news_dominance',False) else 'لا ✅'}
-
-🎯 <b>الإشارة النهائية:</b> {da.get('final_signal',0):.2f} (ثقة: {da.get('confidence',0)*100:.0f}%)"""
+🌀 المذبذب: {osc.get('position','N/A')} | تخميد: {osc.get('damping',0):.2f}
+🌊 الانتشار: {'صعودي 🟢' if diff.get('signal',0)>0 else 'هبوطي 🔴' if diff.get('signal',0)<0 else 'محايد ⚪'} (قوة: {diff.get('strength',0)*100:.1f}%)
+⚡ الحركة القسرية: الأخبار تسيطر؟ {'نعم ⚠️' if forced.get('news_dominance',False) else 'لا ✅'}
+🎯 الإشارة النهائية: {da.get('final_signal',0):.2f} (ثقة: {da.get('confidence',0)*100:.0f}%)"""
     send_long_report(part3)
     
-    # الجزء 4: Order Book
     if ob and ob_an:
         part4 = f"""{'='*45}
 📊 <b>Order Book ({ob_an.get('source','Binance')}):</b>
-💰 Bid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}
+💰 Bid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f} | Spread: {ob['spread_percent']:.3f}%
 ⚖️ ضغط الشراء: {ob_an['buy_pressure']:.1f}% | ضغط البيع: {ob_an['sell_pressure']:.1f}%
 🎯 الإشارة: {ob_an['signal']}"""
         send_long_report(part4)
     
-    # الجزء 5: الأخبار
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
     part5 = f"""📰 <b>آخر الأخبار:</b>\n{news_text}"""
     send_long_report(part5)
     
-    # الجزء 6: Qwen AI
     if ai_analysis:
         part6 = f"""{'='*45}
 🤖 <b>تحليل Qwen AI:</b>\n{ai_analysis}"""
         send_long_report(part6)
     
-    # الجزء 7: التوصية النهائية
     part7 = f"""{'='*45}
 🎯 <b>التوصية النهائية:</b>
 {'='*45}
@@ -608,14 +564,14 @@ def send_unified_report(data, ai_analysis=None):
 🛑 SL: ${data['sl']:,.2f}
 🎯 TP1: ${data['tp1']:,.2f}
 
-💡 <i>هذه التوصية مبنية على دمج جميع المؤشرات مع أنظمة الحماية من التناقض والتشبع. ليست نصيحة مالية.</i>"""
+💡 <i>هذه التوصية مبنية على دمج جميع المؤشرات مع أنظمة الحماية. ليست نصيحة مالية.</i>"""
     send_long_report(part7)
 
-def smart_analysis(symbol):
-    send_message(f"🔍 جاري التحليل الشامل لـ {symbol}...")
-    data = unified_analysis(symbol)
+def smart_analysis(symbol, interval="1h"):
+    send_message(f"🔍 جاري التحليل الشامل لـ {symbol} (تايم فريم: {interval.upper()})...")
+    data = unified_analysis(symbol, interval)
     if not data:
-        send_message(f"❌ فشل تحليل {symbol}.")
+        send_message(f"❌ فشل تحليل {symbol}. تأكد من الرمز أو حاول لاحقاً.")
         return
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري تحليل Qwen AI...")
@@ -647,7 +603,7 @@ def simple_report():
         for symbol in ['BTC-USD', 'ETH-USD', 'AAPL']:
             try:
                 ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="5d")
+                hist = ticker.history(period="5d", interval="1h")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
                     if not np.isnan(price) and price > 0: report += f"✅ <b>{symbol}</b>: ${price:.2f}\n"
@@ -660,7 +616,7 @@ def simple_report():
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message("🤖 <b>بوت التداول الذكي الآمن</b>\n\nالأوامر:\n/smart <رمز> - تحليل شامل\n/test_ob - اختبار Order Book\n/test_report - تقرير بسيط\n/help - المساعدة")
+        send_message("🤖 <b>بوت التداول اليومي الذكي</b>\n\nالأوامر:\n/smart <رمز> [تايم_فريم] - تحليل شامل\nأمثلة:\n/smart BTC-USD 1h (ساعة - افتراضي)\n/smart XRP-USD 15m (15 دقيقة)\n/smart ETH-USD 4h (4 ساعات)\n/test_ob - اختبار Order Book\n/help - المساعدة")
     elif cmd == '/test_ob':
         send_message("🔍 جاري اختبار Order Book...")
         test_order_book()
@@ -668,14 +624,24 @@ def handle_command(command):
         send_message("⏳ جاري...")
         simple_report()
     elif cmd.startswith('/smart'):
-        parts = command.split(' ', 1)
+        parts = command.split(' ')
         if len(parts) < 2:
-            send_message("الاستخدام: /smart <رمز>\nمثال: /smart BTC-USD")
+            send_message("الاستخدام: /smart <رمز> [تايم_فريم]\nمثال: /smart BTC-USD 1h\nمثال: /smart XRP-USD 15m")
             return
+        
         symbol = parts[1].strip().upper().replace(' ', '')
-        smart_analysis(symbol)
+        # ✅ دعم اختيار التايم فريم، والافتراضي 1h للمتداول اليومي
+        interval = parts[2].strip().lower() if len(parts) > 2 else "1h"
+        
+        # التحقق من صحة التايم فريم
+        valid_intervals = ['1m', '2m', '5m', '15m', '30m', '60m', '1h', '90m', '1d', '5d', '1wk', '1mo']
+        if interval not in valid_intervals:
+            send_message(f"⚠️ تايم فريم غير مدعوم. استخدم: 15m, 1h, 4h, 1d")
+            return
+            
+        smart_analysis(symbol, interval)
     elif cmd == '/help':
-        send_message("<b>الأوامر:</b>\n/smart <رمز>\n/test_ob\n/test_report\n/help")
+        send_message("<b>الأوامر:</b>\n/smart <رمز> [15m, 1h, 4h, 1d]\n/test_ob\n/test_report\n/help")
 
 def listen():
     last_id = 0
@@ -691,7 +657,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting Secure Trading Bot with Full Safety Protocols...")
+    logger.info("Starting Day-Trading Optimized Bot with Multi-Timeframe Support...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
