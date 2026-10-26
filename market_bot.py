@@ -73,7 +73,7 @@ def send_message(text):
         else:
             logger.info("✅ تم إرسال الرسالة بنجاح")
     except Exception as e: 
-        logger.error(f" خطأ في الإرسال: {e}")
+        logger.error(f"❌ خطأ في الإرسال: {e}")
 
 def send_long_report(report):
     max_length = 3800
@@ -125,7 +125,7 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f" تنبيه عاجل: {original}\n {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل: {original}\n🔗 {item.get('url', '')}")
                             save_alerted_news(original)
         except Exception as e: logger.error(f"خطأ في مراقبة الأخبار: {e}")
 
@@ -177,32 +177,67 @@ def analyze_order_book(ob):
     else: sig, strn = 'توازن', 'ضعيف'
     return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'source': ob.get('source'), 'estimated': ob.get('estimated')}
 
+# ═══════════════════════════════════════════════════════════════
+# 🔧 إصلاح 1: المذبذب التوافقي مع Dead Zone + Smoothing + Hysteresis
+# ═══════════════════════════════════════════════════════════════
 def calc_damped_oscillator(closes, period=20):
     try:
         prices = np.array(closes[-period:], dtype=float)
         fv = np.mean(prices)
         y = prices - fv
-        yp, ypp = np.gradient(y), np.gradient(np.gradient(y))
-        omega_sq = max(0.01, abs(-ypp[-1] / y[-1])) if abs(y[-1]) > 1e-10 else 0.01
-        gamma = abs(-ypp[-1] - omega_sq * y[-1]) / (2 * abs(yp[-1])) if abs(yp[-1]) > 1e-10 else 0.3
+        
+        # ✅ Smoothing: متوسط آخر 3 نقاط لتقليل الضوضاء
+        y_smooth = np.mean(y[-3:]) if len(y) >= 3 else y[-1]
+        yp = np.gradient(y)
+        ypp = np.gradient(yp)
+        yp_smooth = np.mean(yp[-3:]) if len(yp) >= 3 else yp[-1]
+        ypp_smooth = np.mean(ypp[-3:]) if len(ypp) >= 3 else ypp[-1]
+        
+        omega_sq = max(0.01, abs(-ypp_smooth / y_smooth)) if abs(y_smooth) > 1e-10 else 0.01
+        gamma = abs(-ypp_smooth - omega_sq * y_smooth) / (2 * abs(yp_smooth)) if abs(yp_smooth) > 1e-10 else 0.3
         damp = gamma / (2 * np.sqrt(omega_sq))
-        phase = np.arctan(yp[-1] / (y[-1] + 1e-10))
-        if y[-1] < 0: phase += np.pi
-        pos = 'قاع' if np.pi/2 < phase < 3*np.pi/2 else 'قمة'
-        return {'regime': 'تذبذب نشط' if damp < 1 else 'تخميد عالي', 'position': pos, 'damping': damp, 'prediction': fv + y[-1] + yp[-1] + 0.5*ypp[-1]}
-    except: return {'regime': 'N/A', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
+        
+        # ✅ حد أدنى للتخميد (لا يظهر 0.00)
+        damp = max(0.1, damp)
+        
+        phase = np.arctan2(yp_smooth, y_smooth)
+        
+        # ✅ Dead Zone: منطقة محايدة بين القاع والقمة
+        dead_zone = 0.4  # راديان
+        
+        if np.pi/2 + dead_zone < phase < 3*np.pi/2 - dead_zone:
+            pos = 'قاع'
+        elif phase < np.pi/2 - dead_zone or phase > 3*np.pi/2 + dead_zone:
+            pos = 'قمة'
+        else:
+            pos = 'محايد'  # منطقة انتقالية
+        
+        prediction = fv + y_smooth + yp_smooth + 0.5*ypp_smooth
+        return {'regime': 'تذبذب نشط' if damp < 1 else 'تخميد عالي', 
+                'position': pos, 'damping': damp, 'prediction': prediction}
+    except: return {'regime': 'N/A', 'position': 'محايد', 'damping': 0.5, 'prediction': closes[-1]}
 
+# ═══════════════════════════════════════════════════════════════
+# 🔧 إصلاح 2: نموذج الانتشار مع تنعيم المشتقة الثانية
+# ═══════════════════════════════════════════════════════════════
 def calc_diffusion_model(closes, volumes, period=20):
     try:
         prices, vols = np.array(closes[-period:], dtype=float), np.array(volumes[-period:], dtype=float)
-        fd, sd = np.gradient(prices), np.gradient(np.gradient(prices))
+        fd = np.gradient(prices)
+        sd = np.gradient(fd)
+        
+        # ✅ تنعيم المشتقة الثانية بمتوسط آخر 3 نقاط
+        sd_smooth = np.mean(sd[-3:]) if len(sd) >= 3 else sd[-1]
+        
         volat = np.std(fd) + 1e-10
         D = volat * np.log10(np.mean(vols) + 1e-10)
-        diff_val = D * sd[-1]
+        diff_val = D * sd_smooth
+        
         normalized_signal = diff_val / (volat * 10 + 1e-10)
+        
         return {'signal': 1 if diff_val > 0 else -1, 
                 'strength': min(1.0, abs(diff_val) / (volat * 10)), 
-                'curvature': sd[-1], 
+                'curvature': sd_smooth, 
                 'D': D,
                 'normalized_signal': float(np.clip(normalized_signal, -10, 10))}
     except: return {'signal': 0, 'strength': 0, 'curvature': 0, 'D': 0, 'normalized_signal': 0}
@@ -221,11 +256,22 @@ def advanced_differential_analysis(closes, volumes):
     try:
         osc, diff, forced = calc_damped_oscillator(closes), calc_diffusion_model(closes, volumes), calc_forced_motion(closes, volumes)
         signals = []
-        if 'قاع' in osc['position']: signals.append(1)
-        elif 'قمة' in osc['position']: signals.append(-1)
+        
+        # ✅ Hysteresis: المذبذب المحايد لا يُحتسب
+        if osc['position'] == 'قاع': 
+            signals.append(1)
+        elif osc['position'] == 'قمة': 
+            signals.append(-1)
+        # إذا كان 'محايد'، لا نضيف شيئاً (لا يؤثر)
+        
         if diff['strength'] > 0.3: signals.append(diff['signal'])
         if abs(forced['external_force']) > abs(forced['internal_force']) * 1.5: signals.append(1 if forced['external_force'] > 0 else -1)
-        return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 'final_signal': np.mean(signals) if signals else 0, 'confidence': len(signals) / 3.0}
+        
+        final_signal = np.mean(signals) if signals else 0
+        confidence = len(signals) / 3.0 if signals else 0
+        
+        return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 
+                'final_signal': final_signal, 'confidence': confidence}
     except: return {'oscillator': {}, 'diffusion': {}, 'forced': {}, 'final_signal': 0, 'confidence': 0}
 
 def fetch_news(symbol):
@@ -316,6 +362,9 @@ def calc_vgs(closes, volumes):
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength, 'grad_P': float(gpw), 'grad_V': float(gvw), 'grad_R': float(grw), 'grad_M': float(gmw), 'direction_score': float(ds)}
     except: return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
+# ═══════════════════════════════════════════════════════════════
+#  إصلاح 3: VFM مع تطبيع محسّن للتباعد
+# ═══════════════════════════════════════════════════════════════
 def calc_vfm(closes, volumes):
     try:
         if len(closes) < 20: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
@@ -348,19 +397,22 @@ def calc_vfm(closes, volumes):
         price_volatility = np.std(pc) + 1e-10
         normalized_div = div / price_volatility
         
-        if normalized_div > 0.5 and normalized_flux > 0: 
-            sig, strn = 'تدفق دخول قوي', 'قوي' if normalized_div > 1.0 else 'متوسط'
-        elif normalized_div < -0.5 and normalized_flux < 0: 
-            sig, strn = 'تدفق خروج قوي', 'قوي' if normalized_div < -1.0 else 'متوسط'
+        # ✅ تطبيع إضافي بالتباعد اللوغاريتمي
+        log_normalized_div = np.sign(normalized_div) * np.log1p(abs(normalized_div))
+        
+        if log_normalized_div > 0.5 and normalized_flux > 0: 
+            sig, strn = 'تدفق دخول قوي', 'قوي' if log_normalized_div > 1.0 else 'متوسط'
+        elif log_normalized_div < -0.5 and normalized_flux < 0: 
+            sig, strn = 'تدفق خروج قوي', 'قوي' if log_normalized_div < -1.0 else 'متوسط'
         elif curl > 0.3: 
             sig, strn = 'دوامات وتقلبات', 'عالي التقلب'
         else: 
             sig, strn = 'محايد', 'ضعيف'
         
         return {
-            'divergence': float(np.clip(normalized_div, -10, 10)),
+            'divergence': float(np.clip(log_normalized_div, -5, 5)),  # ✅ نطاق أضيق
             'curl': float(curl),
-            'flux': float(np.clip(normalized_flux, -10, 10)),
+            'flux': float(np.clip(normalized_flux, -5, 5)),
             'signal': sig,
             'strength': strn
         }
@@ -382,7 +434,7 @@ def get_action_recommendation(data):
         
         score = 0
         math_signals = []
-        osc_position = osc.get('position', '')
+        osc_position = osc.get('position', 'محايد')
         
         if diff_conf >= 0.66:
             if diff_sig > 0.5:
@@ -399,12 +451,14 @@ def get_action_recommendation(data):
                 score -= 3
                 math_signals.append(f"التفاضلي هبوطي ({diff_sig:.2f})")
         
-        if 'قمة' in osc_position:
+        # ✅ Hysteresis: المذبذب المحايد لا يُحتسب
+        if osc_position == 'قمة':
             score -= 3
             math_signals.append(f"المذبذب عند قمة (خصم -3)")
-        elif 'قاع' in osc_position:
+        elif osc_position == 'قاع':
             score += 3
             math_signals.append(f"المذبذب عند قاع (إضافة +3)")
+        # إذا كان 'محايد'، لا نضيف ولا نخصم
         
         if ob_an:
             ob_signal = ob_an.get('signal', '')
@@ -461,14 +515,14 @@ def get_action_recommendation(data):
         
         veto_warning = ""
         reversal_signals = 0
-        if 'قاع' in osc_position: reversal_signals += 1
+        if osc_position == 'قاع': reversal_signals += 1
         if diff_model.get('signal', 0) > 0 and diff_model.get('strength', 0) > 0.3: reversal_signals += 1
         if diff_sig > 0.5 and diff_conf > 0.5: reversal_signals += 1
         
         if reversal_signals >= 2 and score < -3:
             score = 0
             veto_warning = f"فيتو انعكاسي: {reversal_signals}/3 نماذج تشير لقاع! تم إلغاء Short."
-        elif 'قمة' in osc_position and score > 3:
+        elif osc_position == 'قمة' and score > 3:
             score = 0
             veto_warning = f"فيتو انعكاسي: المذبذب عند قمة! تم إلغاء Long."
         
@@ -540,9 +594,6 @@ def unified_analysis(symbol, interval="1h"):
         logger.error(f"خطأ في التحليل {symbol}: {e}")
         return None
 
-# ═══════════════════════════════════════════════════════════════
-# 🤖 Qwen AI (التحليل الرئيسي)
-# ═══════════════════════════════════════════════════════════════
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: 
         return None
@@ -593,7 +644,7 @@ RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
                 elif res.status_code == 429:
                     time.sleep(5)
                 else:
-                    logger.error(f" خطأ HTTP {res.status_code}")
+                    logger.error(f"❌ خطأ HTTP {res.status_code}")
                     
             except requests.exceptions.Timeout:
                 time.sleep(3)
@@ -606,11 +657,7 @@ RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
         logger.error(f"❌ خطأ عام في ask_qwen: {str(e)}")
         return None
 
-# ═══════════════════════════════════════════════════════════════
-# 🤖 Gemini AI (المساعد - رأي ثاني)
-# ═══════════════════════════════════════════════════════════════
 def ask_gemini(data):
-    """تحليل Gemini AI كمساعد لـ Qwen"""
     if not GEMINI_API_KEY:
         logger.warning("⚠️ GEMINI_API_KEY غير موجود - تم تعطيل Gemini")
         return None
@@ -644,7 +691,7 @@ Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
             }
         }
         
-        logger.info(" جاري إرسال طلب إلى Gemini AI...")
+        logger.info("🤖 جاري إرسال طلب إلى Gemini AI...")
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -667,16 +714,16 @@ Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
                     logger.error(f"❌ خطأ HTTP {res.status_code}: {res.text[:200]}")
                     
             except requests.exceptions.Timeout:
-                logger.warning(f"️ Timeout - محاولة {attempt + 1}/{max_retries}")
+                logger.warning(f"⏱️ Timeout - محاولة {attempt + 1}/{max_retries}")
                 time.sleep(3)
             except Exception as e:
-                logger.error(f" خطأ في المحاولة {attempt + 1}: {str(e)[:200]}")
+                logger.error(f"❌ خطأ في المحاولة {attempt + 1}: {str(e)[:200]}")
                 time.sleep(3)
         
         logger.error("❌ فشلت جميع محاولات Gemini AI")
         return None
     except Exception as e:
-        logger.error(f" خطأ عام في ask_gemini: {str(e)}")
+        logger.error(f"❌ خطأ عام في ask_gemini: {str(e)}")
         return None
 
 def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
@@ -732,7 +779,7 @@ Kelly الآمن: {kelly.get('kelly_safe', 0)*100:.1f}%
 {'='*45}
 
 1. المذبذب التوافقي:
-- الموقع: {osc.get('position','N/A')}
+- الموقع: {osc.get('position','محايد')}
 - التخميد: {osc.get('damping',0):.2f}
 - التنبؤ: ${osc.get('prediction',0):,.2f}
 
@@ -763,7 +810,6 @@ Bid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}
 {news_text}"""
     send_long_report(part5)
     
-    # ✅ تحليل Qwen AI (الرئيسي)
     if qwen_analysis:
         part6 = f"""{'='*45}
 🤖 تحليل Qwen AI (الرئيسي):
@@ -771,7 +817,6 @@ Bid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}
 {qwen_analysis}"""
         send_long_report(part6)
     
-    # ✅ تحليل Gemini AI (المساعد)
     if gemini_analysis:
         part6b = f"""{'='*45}
 🤖 تحليل Gemini AI (المساعد - رأي ثاني):
@@ -806,14 +851,12 @@ def smart_analysis(symbol, interval="1h"):
     qwen_ai = None
     gemini_ai = None
     
-    # ✅ استدعاء Qwen AI
     if OPENROUTER_API_KEY:
-        send_message("🤖 جاري التحليل بواسطة Qwen AI...")
+        send_message(" جاري التحليل بواسطة Qwen AI...")
         qwen_ai = ask_qwen(data)
     
-    # ✅ استدعاء Gemini AI (المساعد)
     if GEMINI_API_KEY:
-        send_message(" جاري التحليل المساعد بواسطة Gemini AI...")
+        send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
         gemini_ai = ask_gemini(data)
     
     send_unified_report(data, qwen_ai, gemini_ai)
@@ -871,11 +914,11 @@ def handle_command(command):
 def listen():
     last_id = 0
     logger.info("🤖 البوت يبدأ الاستماع للرسائل الآن...")
-    logger.info(f" CHAT_ID المسجل: {CHAT_ID}")
+    logger.info(f"📋 CHAT_ID المسجل: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN موجود: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
-    logger.info(f"🤖 OPENROUTER_API_KEY (Qwen) موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
-    logger.info(f"🤖 GEMINI_API_KEY (Gemini) موجود: {'نعم' if GEMINI_API_KEY else 'لا'}")
-    logger.info(f"📰 FINNHUB_API_KEY موجود: {'نعم' if FINNHUB_API_KEY else 'لا'}")
+    logger.info(f" OPENROUTER_API_KEY (Qwen) موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
+    logger.info(f" GEMINI_API_KEY (Gemini) موجود: {'نعم' if GEMINI_API_KEY else 'لا'}")
+    logger.info(f" FINNHUB_API_KEY موجود: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     while True:
         try:
@@ -890,13 +933,13 @@ def listen():
                         incoming_chat_id = str(update['message']['chat']['id']).strip()
                         expected_chat_id = str(CHAT_ID).strip()
                         
-                        logger.info(f" رسالة وردت من Chat ID: {incoming_chat_id} | النص: {update['message']['text']}")
+                        logger.info(f"📩 رسالة وردت من Chat ID: {incoming_chat_id} | النص: {update['message']['text']}")
                         
                         if incoming_chat_id == expected_chat_id:
                             logger.info("✅ تم مطابقة الـ ID بنجاح، جاري تنفيذ الأمر...")
                             handle_command(update['message']['text'])
                         else:
-                            logger.warning(f"⚠️ تم تجاهل الرسالة. المتوقع: {expected_chat_id} | الوارد: {incoming_chat_id}")
+                            logger.warning(f"️ تم تجاهل الرسالة. المتوقع: {expected_chat_id} | الوارد: {incoming_chat_id}")
                             
                     last_id = update['update_id']
             else:
@@ -906,7 +949,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info(" Starting QUANT Trading Bot - Math-Driven 80% Decision System...")
+    logger.info("🧮 Starting QUANT Trading Bot - Math-Driven 80% Decision System...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN موجود: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER_API_KEY (Qwen) موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
