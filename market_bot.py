@@ -7,6 +7,7 @@ import os
 from flask import Flask
 import threading
 import numpy as np
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,10 +45,49 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
+# ═══════════════════════════════════════════════════════════════
+# ✅ تحسين 1: دالة تنظيف Markdown من ردود Qwen AI
+# ═══════════════════════════════════════════════════════════════
+def clean_markdown(text):
+    """إزالة رموز Markdown وتحويلها لنص عادي واضح"""
+    if not text:
+        return text
+    
+    # إزالة العناوين (###, ##, #)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # إزالة النص العريض (**نص**)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    
+    # إزالة النص المائل (*نص*)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    
+    # إزالة الخط السفلي (__نص__)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    
+    # إزالة الرموز النقطية للقوائم
+    text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # إزالة أرقام القوائم (1. 2. 3.)
+    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
+    
+    # إزالة علامات الاقتباس (```)
+    text = re.sub(r'```[a-z]*\n?', '', text)
+    
+    # إزالة الروابط [نص](رابط)
+    text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+    
+    # إزالة الخطوط الأفقية (---)
+    text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)
+    
+    # إزالة الأسطر الفارغة المتكررة
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
 def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        # ✅ الإصلاح: إزالة parse_mode لتجنب أخطاء HTML
         data = {"chat_id": CHAT_ID, "text": text}
         logger.info(f"📤 إرسال رسالة إلى {CHAT_ID}")
         resp = requests.post(url, json=data, timeout=15)
@@ -93,7 +133,7 @@ def save_alerted_news(headline):
     except: pass
 
 def monitor_urgent_news():
-    logger.info("🔍 بدء مراقبة الأخبار العاجلة...")
+    logger.info(" بدء مراقبة الأخبار العاجلة...")
     while True:
         try:
             time.sleep(1800)
@@ -176,6 +216,9 @@ def calc_damped_oscillator(closes, period=20):
         return {'regime': 'تذبذب نشط' if damp < 1 else 'تخميد عالي', 'position': pos, 'damping': damp, 'prediction': fv + y[-1] + yp[-1] + 0.5*ypp[-1]}
     except: return {'regime': 'N/A', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
 
+# ═══════════════════════════════════════════════════════════════
+# ✅ تحسين 2: تطبيع رقم VFM بشكل كامل
+# ═══════════════════════════════════════════════════════════════
 def calc_diffusion_model(closes, volumes, period=20):
     try:
         prices, vols = np.array(closes[-period:], dtype=float), np.array(volumes[-period:], dtype=float)
@@ -183,8 +226,16 @@ def calc_diffusion_model(closes, volumes, period=20):
         volat = np.std(fd) + 1e-10
         D = volat * np.log10(np.mean(vols) + 1e-10)
         diff_val = D * sd[-1]
-        return {'signal': 1 if diff_val > 0 else -1, 'strength': min(1.0, abs(diff_val) / (volat * 10)), 'curvature': sd[-1], 'D': D}
-    except: return {'signal': 0, 'strength': 0, 'curvature': 0, 'D': 0}
+        
+        # ✅ تطبيع القيمة بقسمتها على التقلب
+        normalized_signal = diff_val / (volat * 10 + 1e-10)
+        
+        return {'signal': 1 if diff_val > 0 else -1, 
+                'strength': min(1.0, abs(diff_val) / (volat * 10)), 
+                'curvature': sd[-1], 
+                'D': D,
+                'normalized_signal': float(np.clip(normalized_signal, -10, 10))}
+    except: return {'signal': 0, 'strength': 0, 'curvature': 0, 'D': 0, 'normalized_signal': 0}
 
 def calc_forced_motion(closes, volumes, period=20):
     try:
@@ -295,6 +346,9 @@ def calc_vgs(closes, volumes):
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength, 'grad_P': float(gpw), 'grad_V': float(gvw), 'grad_R': float(grw), 'grad_M': float(gmw), 'direction_score': float(ds)}
     except: return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
+# ══════════════════════════════════════════════════════════════
+# ✅ تحسين 2 (مكمل): تطبيع VFM بشكل كامل
+# ══════════════════════════════════════════════════════════════
 def calc_vfm(closes, volumes):
     try:
         if len(closes) < 20: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
@@ -321,14 +375,34 @@ def calc_vfm(closes, volumes):
         curl = np.mean(curls) if curls else 0.0
         flux = np.mean(fluxs) if fluxs else 0.0
         
+        # ✅ التطبيع الكامل
         avg_vol = np.mean(vols)
-        normalized_flux = flux / (avg_vol + 1e-10)
+        avg_price_change = np.mean(np.abs(pc))
         
-        if div > 0.05 and normalized_flux > 0: sig, strn = 'تدفق دخول قوي', 'قوي' if div > 0.1 else 'متوسط'
-        elif div < -0.05 and normalized_flux < 0: sig, strn = 'تدفق خروج قوي', 'قوي' if div < -0.1 else 'متوسط'
-        elif curl > 0.3: sig, strn = 'دوامات وتقلبات', 'عالي التقلب'
-        else: sig, strn = 'محايد', 'ضعيف'
-        return {'divergence': float(div), 'curl': float(curl), 'flux': float(normalized_flux), 'signal': sig, 'strength': strn}
+        # تطبيع Flux: قسمة على متوسط الحجم ومتوسط تغير السعر
+        normalized_flux = flux / (avg_vol * avg_price_change + 1e-10)
+        
+        # تطبيع Divergence: قسمة على التقلب
+        price_volatility = np.std(pc) + 1e-10
+        normalized_div = div / price_volatility
+        
+        # تحديد الإشارة بناءً على القيم المطبعة
+        if normalized_div > 0.5 and normalized_flux > 0: 
+            sig, strn = 'تدفق دخول قوي', 'قوي' if normalized_div > 1.0 else 'متوسط'
+        elif normalized_div < -0.5 and normalized_flux < 0: 
+            sig, strn = 'تدفق خروج قوي', 'قوي' if normalized_div < -1.0 else 'متوسط'
+        elif curl > 0.3: 
+            sig, strn = 'دوامات وتقلبات', 'عالي التقلب'
+        else: 
+            sig, strn = 'محايد', 'ضعيف'
+        
+        return {
+            'divergence': float(np.clip(normalized_div, -10, 10)),
+            'curl': float(curl),
+            'flux': float(np.clip(normalized_flux, -10, 10)),
+            'signal': sig,
+            'strength': strn
+        }
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
 def get_action_recommendation(data):
@@ -400,12 +474,12 @@ def get_action_recommendation(data):
         
         vfm_div = vfm.get('divergence', 0)
         vfm_flux = vfm.get('flux', 0)
-        if vfm_div > 0.05 and vfm_flux > 0:
+        if vfm_div > 0.5 and vfm_flux > 0:
             score += 2
-            math_signals.append(f"VFM: تدفق دخول ({vfm_flux:.2f})")
-        elif vfm_div < -0.05 and vfm_flux < 0:
+            math_signals.append(f"VFM: تدفق دخول ({vfm_div:.2f})")
+        elif vfm_div < -0.5 and vfm_flux < 0:
             score -= 2
-            math_signals.append(f"VFM: تدفق خروج ({vfm_flux:.2f})")
+            math_signals.append(f"VFM: تدفق خروج ({vfm_div:.2f})")
         
         if rsi > 80:
             score -= 1
@@ -506,6 +580,9 @@ def unified_analysis(symbol, interval="1h"):
         logger.error(f"خطأ في التحليل {symbol}: {e}")
         return None
 
+# ═══════════════════════════════════════════════════════════════
+# ✅ تحسين 1 (مكمل): تطبيق clean_markdown على رد Qwen
+# ═══════════════════════════════════════════════════════════════
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: 
         logger.warning("OPENROUTER_API_KEY غير موجود")
@@ -520,11 +597,11 @@ def ask_qwen(data):
 الإشارة التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f} (ثقة: {data['diff_analysis'].get('confidence',0)*100:.0f}%)
 RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
 
-أعطِ تحليلاً كمياً مختصراً:
+أعطِ تحليلاً كمياً مختصراً بالعربية في 3 نقاط فقط (بدون رموز Markdown):
 1. القرار بناءً على الرياضيات
 2. تفسير فيزيائي لحركة السعر
 3. المخاطر
-ليس نصيحة مالية."""
+ليس نصيحة مالية. لا تستخدم # أو * أو ** في ردك."""
         
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -551,8 +628,10 @@ RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
                     result = res.json()
                     if 'choices' in result and len(result['choices']) > 0:
                         analysis = result['choices'][0]['message']['content']
-                        logger.info(f"تم استلام تحليل Qwen AI ({len(analysis)} حرف)")
-                        return analysis
+                        # ✅ تطبيق تنظيف Markdown
+                        cleaned_analysis = clean_markdown(analysis)
+                        logger.info(f"تم استلام تحليل Qwen AI ({len(cleaned_analysis)} حرف)")
+                        return cleaned_analysis
                     else:
                         logger.warning(f"الرد لا يحتوي على choices: {result}")
                 elif res.status_code == 429:
@@ -642,7 +721,7 @@ Kelly الآمن: {kelly.get('kelly_safe', 0)*100:.1f}%
     send_long_report(part2)
     
     part3 = f"""VGS (قوة التدرج): {vgs.get('vgs',0):.3f} - {vgs.get('direction','')}
-VFM (التدفق): تباعد {vfm.get('divergence',0):.3f} | تدفق {vfm.get('flux',0):.2f}"""
+VFM (التدفق): تباعد {vfm.get('divergence',0):.2f} | تدفق {vfm.get('flux',0):.2f}"""
     send_long_report(part3)
     
     if ob and ob_an:
