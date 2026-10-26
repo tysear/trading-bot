@@ -20,6 +20,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
@@ -45,44 +47,19 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# ═══════════════════════════════════════════════════════════════
-# ✅ تحسين 1: دالة تنظيف Markdown من ردود Qwen AI
-# ═══════════════════════════════════════════════════════════════
 def clean_markdown(text):
-    """إزالة رموز Markdown وتحويلها لنص عادي واضح"""
     if not text:
         return text
-    
-    # إزالة العناوين (###, ##, #)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    
-    # إزالة النص العريض (**نص**)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    
-    # إزالة النص المائل (*نص*)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
-    
-    # إزالة الخط السفلي (__نص__)
     text = re.sub(r'__(.+?)__', r'\1', text)
-    
-    # إزالة الرموز النقطية للقوائم
     text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
-    
-    # إزالة أرقام القوائم (1. 2. 3.)
     text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
-    
-    # إزالة علامات الاقتباس (```)
     text = re.sub(r'```[a-z]*\n?', '', text)
-    
-    # إزالة الروابط [نص](رابط)
     text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
-    
-    # إزالة الخطوط الأفقية (---)
     text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)
-    
-    # إزالة الأسطر الفارغة المتكررة
     text = re.sub(r'\n{3,}', '\n\n', text)
-    
     return text.strip()
 
 def send_message(text):
@@ -96,7 +73,7 @@ def send_message(text):
         else:
             logger.info("✅ تم إرسال الرسالة بنجاح")
     except Exception as e: 
-        logger.error(f"❌ خطأ في الإرسال: {e}")
+        logger.error(f" خطأ في الإرسال: {e}")
 
 def send_long_report(report):
     max_length = 3800
@@ -133,7 +110,7 @@ def save_alerted_news(headline):
     except: pass
 
 def monitor_urgent_news():
-    logger.info(" بدء مراقبة الأخبار العاجلة...")
+    logger.info("🔍 بدء مراقبة الأخبار العاجلة...")
     while True:
         try:
             time.sleep(1800)
@@ -148,7 +125,7 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل: {original}\n🔗 {item.get('url', '')}")
+                            send_message(f" تنبيه عاجل: {original}\n {item.get('url', '')}")
                             save_alerted_news(original)
         except Exception as e: logger.error(f"خطأ في مراقبة الأخبار: {e}")
 
@@ -198,8 +175,7 @@ def analyze_order_book(ob):
     elif sp > 65: sig, strn = 'ضغط بيع قوي', 'قوي'
     elif sp > 55: sig, strn = 'ضغط بيع معتدل', 'متوسط'
     else: sig, strn = 'توازن', 'ضعيف'
-    spr_st = 'ضيق' if ob['spread_percent'] < 0.1 else 'واسع' if ob['spread_percent'] > 0.5 else 'عادي'
-    return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'spread_status': spr_st, 'source': ob.get('source'), 'estimated': ob.get('estimated')}
+    return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'source': ob.get('source'), 'estimated': ob.get('estimated')}
 
 def calc_damped_oscillator(closes, period=20):
     try:
@@ -216,9 +192,6 @@ def calc_damped_oscillator(closes, period=20):
         return {'regime': 'تذبذب نشط' if damp < 1 else 'تخميد عالي', 'position': pos, 'damping': damp, 'prediction': fv + y[-1] + yp[-1] + 0.5*ypp[-1]}
     except: return {'regime': 'N/A', 'position': 'N/A', 'damping': 0, 'prediction': closes[-1]}
 
-# ═══════════════════════════════════════════════════════════════
-# ✅ تحسين 2: تطبيع رقم VFM بشكل كامل
-# ═══════════════════════════════════════════════════════════════
 def calc_diffusion_model(closes, volumes, period=20):
     try:
         prices, vols = np.array(closes[-period:], dtype=float), np.array(volumes[-period:], dtype=float)
@@ -226,10 +199,7 @@ def calc_diffusion_model(closes, volumes, period=20):
         volat = np.std(fd) + 1e-10
         D = volat * np.log10(np.mean(vols) + 1e-10)
         diff_val = D * sd[-1]
-        
-        # ✅ تطبيع القيمة بقسمتها على التقلب
         normalized_signal = diff_val / (volat * 10 + 1e-10)
-        
         return {'signal': 1 if diff_val > 0 else -1, 
                 'strength': min(1.0, abs(diff_val) / (volat * 10)), 
                 'curvature': sd[-1], 
@@ -346,9 +316,6 @@ def calc_vgs(closes, volumes):
         return {'vgs': float(vgs), 'direction': direction, 'strength': strength, 'grad_P': float(gpw), 'grad_V': float(gvw), 'grad_R': float(grw), 'grad_M': float(gmw), 'direction_score': float(ds)}
     except: return {'vgs': 0, 'direction': 'محايد', 'strength': 'خطأ', 'grad_P': 0, 'grad_V': 0, 'grad_R': 0, 'grad_M': 0, 'direction_score': 0}
 
-# ══════════════════════════════════════════════════════════════
-# ✅ تحسين 2 (مكمل): تطبيع VFM بشكل كامل
-# ══════════════════════════════════════════════════════════════
 def calc_vfm(closes, volumes):
     try:
         if len(closes) < 20: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'محايد', 'strength': 'ضعيف'}
@@ -375,18 +342,12 @@ def calc_vfm(closes, volumes):
         curl = np.mean(curls) if curls else 0.0
         flux = np.mean(fluxs) if fluxs else 0.0
         
-        # ✅ التطبيع الكامل
         avg_vol = np.mean(vols)
         avg_price_change = np.mean(np.abs(pc))
-        
-        # تطبيع Flux: قسمة على متوسط الحجم ومتوسط تغير السعر
         normalized_flux = flux / (avg_vol * avg_price_change + 1e-10)
-        
-        # تطبيع Divergence: قسمة على التقلب
         price_volatility = np.std(pc) + 1e-10
         normalized_div = div / price_volatility
         
-        # تحديد الإشارة بناءً على القيم المطبعة
         if normalized_div > 0.5 and normalized_flux > 0: 
             sig, strn = 'تدفق دخول قوي', 'قوي' if normalized_div > 1.0 else 'متوسط'
         elif normalized_div < -0.5 and normalized_flux < 0: 
@@ -421,7 +382,6 @@ def get_action_recommendation(data):
         
         score = 0
         math_signals = []
-        
         osc_position = osc.get('position', '')
         
         if diff_conf >= 0.66:
@@ -581,11 +541,10 @@ def unified_analysis(symbol, interval="1h"):
         return None
 
 # ═══════════════════════════════════════════════════════════════
-# ✅ تحسين 1 (مكمل): تطبيق clean_markdown على رد Qwen
+# 🤖 Qwen AI (التحليل الرئيسي)
 # ═══════════════════════════════════════════════════════════════
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: 
-        logger.warning("OPENROUTER_API_KEY غير موجود")
         return None
     try:
         rec = data.get('recommendation', {})
@@ -617,7 +576,7 @@ RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
             "max_tokens": 500
         }
         
-        logger.info("جاري إرسال طلب إلى Qwen AI...")
+        logger.info("🤖 جاري إرسال طلب إلى Qwen AI...")
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -628,32 +587,99 @@ RSI: {data['rsi']:.1f} | Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
                     result = res.json()
                     if 'choices' in result and len(result['choices']) > 0:
                         analysis = result['choices'][0]['message']['content']
-                        # ✅ تطبيق تنظيف Markdown
-                        cleaned_analysis = clean_markdown(analysis)
-                        logger.info(f"تم استلام تحليل Qwen AI ({len(cleaned_analysis)} حرف)")
-                        return cleaned_analysis
-                    else:
-                        logger.warning(f"الرد لا يحتوي على choices: {result}")
+                        cleaned = clean_markdown(analysis)
+                        logger.info(f"✅ تم استلام تحليل Qwen AI ({len(cleaned)} حرف)")
+                        return cleaned
                 elif res.status_code == 429:
-                    logger.warning(f"Rate limit - محاولة {attempt + 1}/{max_retries}")
                     time.sleep(5)
                 else:
-                    logger.error(f"خطأ HTTP {res.status_code}: {res.text[:200]}")
+                    logger.error(f" خطأ HTTP {res.status_code}")
                     
             except requests.exceptions.Timeout:
-                logger.warning(f"Timeout - محاولة {attempt + 1}/{max_retries}")
                 time.sleep(3)
             except Exception as e:
-                logger.error(f"خطأ في المحاولة {attempt + 1}: {str(e)[:200]}")
+                logger.error(f"❌ خطأ: {str(e)[:200]}")
                 time.sleep(3)
         
-        logger.error("فشلت جميع محاولات Qwen AI")
         return None
     except Exception as e:
-        logger.error(f"خطأ عام في ask_qwen: {str(e)}")
+        logger.error(f"❌ خطأ عام في ask_qwen: {str(e)}")
         return None
 
-def send_unified_report(data, ai_analysis=None):
+# ═══════════════════════════════════════════════════════════════
+# 🤖 Gemini AI (المساعد - رأي ثاني)
+# ═══════════════════════════════════════════════════════════════
+def ask_gemini(data):
+    """تحليل Gemini AI كمساعد لـ Qwen"""
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود - تم تعطيل Gemini")
+        return None
+    try:
+        rec = data.get('recommendation', {})
+        math_sigs = rec.get('math_signals', [])
+        math_text = " | ".join(math_sigs[:3]) if math_sigs else "لا توجد"
+        
+        prompt = f"""أنت محلل تداول مساعد (Co-Analyst). قدم رأياً ثانياً مستقلاً عن:
+
+الرمز: {data['symbol']} ({data.get('interval', '1h')})
+السعر: ${data['price']:,.2f}
+RSI: {data['rsi']:.1f}
+الإشارات الرياضية: {math_text}
+الإشارة التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}
+Kelly: {data['kelly'].get('kelly_safe',0)*100:.1f}%
+
+أعطِ رأيك المختصر بالعربية (بدون Markdown):
+- هل تتفق مع التحليل الكمي؟ لماذا؟
+- ما الذي قد يفوته التحليل الرئيسي؟
+- نصيحة عملية واحدة
+
+لا تستخدم # أو * أو **. ليس نصيحة مالية."""
+        
+        url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 500
+            }
+        }
+        
+        logger.info(" جاري إرسال طلب إلى Gemini AI...")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                res = requests.post(url, json=payload, timeout=30)
+                
+                if res.status_code == 200:
+                    result = res.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        analysis = result['candidates'][0]['content']['parts'][0]['text']
+                        cleaned = clean_markdown(analysis)
+                        logger.info(f"✅ تم استلام تحليل Gemini AI ({len(cleaned)} حرف)")
+                        return cleaned
+                    else:
+                        logger.warning(f"⚠️ الرد لا يحتوي على candidates")
+                elif res.status_code == 429:
+                    logger.warning(f"⚠️ Rate limit - محاولة {attempt + 1}/{max_retries}")
+                    time.sleep(5)
+                else:
+                    logger.error(f"❌ خطأ HTTP {res.status_code}: {res.text[:200]}")
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"️ Timeout - محاولة {attempt + 1}/{max_retries}")
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f" خطأ في المحاولة {attempt + 1}: {str(e)[:200]}")
+                time.sleep(3)
+        
+        logger.error("❌ فشلت جميع محاولات Gemini AI")
+        return None
+    except Exception as e:
+        logger.error(f" خطأ عام في ask_gemini: {str(e)}")
+        return None
+
+def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
     rec = data.get('recommendation', {})
     vgs, vfm = data.get('vgs', {}), data.get('vfm', {})
     ob, ob_an = data.get('order_book'), data.get('ob_analysis')
@@ -737,11 +763,21 @@ Bid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}
 {news_text}"""
     send_long_report(part5)
     
-    if ai_analysis:
+    # ✅ تحليل Qwen AI (الرئيسي)
+    if qwen_analysis:
         part6 = f"""{'='*45}
-تحليل Qwen AI:
-{ai_analysis}"""
+🤖 تحليل Qwen AI (الرئيسي):
+{'='*45}
+{qwen_analysis}"""
         send_long_report(part6)
+    
+    # ✅ تحليل Gemini AI (المساعد)
+    if gemini_analysis:
+        part6b = f"""{'='*45}
+🤖 تحليل Gemini AI (المساعد - رأي ثاني):
+{'='*45}
+{gemini_analysis}"""
+        send_long_report(part6b)
     
     part7 = f"""{'='*45}
 التوصية النهائية:
@@ -766,12 +802,21 @@ def smart_analysis(symbol, interval="1h"):
     if not data:
         send_message(f"فشل تحليل {symbol}.")
         return
+    
+    qwen_ai = None
+    gemini_ai = None
+    
+    # ✅ استدعاء Qwen AI
     if OPENROUTER_API_KEY:
-        send_message("جاري التحليل الكمي (Qwen AI)...")
-        ai = ask_qwen(data)
-    else: 
-        ai = None
-    send_unified_report(data, ai)
+        send_message("🤖 جاري التحليل بواسطة Qwen AI...")
+        qwen_ai = ask_qwen(data)
+    
+    # ✅ استدعاء Gemini AI (المساعد)
+    if GEMINI_API_KEY:
+        send_message(" جاري التحليل المساعد بواسطة Gemini AI...")
+        gemini_ai = ask_gemini(data)
+    
+    send_unified_report(data, qwen_ai, gemini_ai)
 
 def test_order_book():
     send_message("جاري اختبار Order Book...")
@@ -796,6 +841,7 @@ def handle_command(command):
         send_message("""بوت التداول الكمي (Quant Bot)
 
 الفلسفة: المعادلات الرياضية + Order Book = 80% من القرار
+مدعوم بـ Qwen AI + Gemini AI (رأيان مستقلان)
 
 الأوامر:
 /smart <رمز> [تايم_فريم]
@@ -824,9 +870,12 @@ def handle_command(command):
 
 def listen():
     last_id = 0
-    logger.info("البوت يبدأ الاستماع للرسائل الآن...")
-    logger.info(f"CHAT_ID المسجل: {CHAT_ID}")
-    logger.info(f"TELEGRAM_TOKEN (أول 30 حرف): {TELEGRAM_TOKEN[:30]}...")
+    logger.info("🤖 البوت يبدأ الاستماع للرسائل الآن...")
+    logger.info(f" CHAT_ID المسجل: {CHAT_ID}")
+    logger.info(f"🔑 TELEGRAM_TOKEN موجود: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
+    logger.info(f"🤖 OPENROUTER_API_KEY (Qwen) موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
+    logger.info(f"🤖 GEMINI_API_KEY (Gemini) موجود: {'نعم' if GEMINI_API_KEY else 'لا'}")
+    logger.info(f"📰 FINNHUB_API_KEY موجود: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     while True:
         try:
@@ -841,27 +890,28 @@ def listen():
                         incoming_chat_id = str(update['message']['chat']['id']).strip()
                         expected_chat_id = str(CHAT_ID).strip()
                         
-                        logger.info(f"رسالة وردت من Chat ID: {incoming_chat_id} | النص: {update['message']['text']}")
+                        logger.info(f" رسالة وردت من Chat ID: {incoming_chat_id} | النص: {update['message']['text']}")
                         
                         if incoming_chat_id == expected_chat_id:
-                            logger.info("تم مطابقة الـ ID بنجاح، جاري تنفيذ الأمر...")
+                            logger.info("✅ تم مطابقة الـ ID بنجاح، جاري تنفيذ الأمر...")
                             handle_command(update['message']['text'])
                         else:
-                            logger.warning(f"تم تجاهل الرسالة. المتوقع: {expected_chat_id} | الوارد: {incoming_chat_id}")
+                            logger.warning(f"⚠️ تم تجاهل الرسالة. المتوقع: {expected_chat_id} | الوارد: {incoming_chat_id}")
                             
                     last_id = update['update_id']
             else:
-                logger.error(f"خطأ في getUpdates: {resp.status_code} - {resp.text[:200]}")
+                logger.error(f"❌ خطأ في getUpdates: {resp.status_code} - {resp.text[:200]}")
         except Exception as e:
-            logger.error(f"خطأ في الاستماع: {e}")
+            logger.error(f"❌ خطأ في الاستماع: {e}")
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("Starting QUANT Trading Bot - Math-Driven 80% Decision System...")
-    logger.info(f"CHAT_ID: {CHAT_ID}")
-    logger.info(f"TELEGRAM_TOKEN موجود: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
-    logger.info(f"OPENROUTER_API_KEY موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
-    logger.info(f"FINNHUB_API_KEY موجود: {'نعم' if FINNHUB_API_KEY else 'لا'}")
+    logger.info(" Starting QUANT Trading Bot - Math-Driven 80% Decision System...")
+    logger.info(f"📋 CHAT_ID: {CHAT_ID}")
+    logger.info(f"🔑 TELEGRAM_TOKEN موجود: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
+    logger.info(f"🤖 OPENROUTER_API_KEY (Qwen) موجود: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
+    logger.info(f"🤖 GEMINI_API_KEY (Gemini) موجود: {'نعم' if GEMINI_API_KEY else 'لا'}")
+    logger.info(f"📰 FINNHUB_API_KEY موجود: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
