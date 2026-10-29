@@ -132,7 +132,7 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n {item.get('url', '')}")
                             save_alerted_news(original)
                             logger.info(f"✅ تم إرسال تنبيه: {original}")
             else:
@@ -252,11 +252,10 @@ def advanced_differential_analysis(closes, volumes):
         return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 'final_signal': np.mean(signals) if signals else 0, 'confidence': len(signals) / 3.0 if signals else 0}
     except: return {'oscillator': {}, 'diffusion': {}, 'forced': {}, 'final_signal': 0, 'confidence': 0}
 
-# ✅ إصلاح 1: جلب الأخبار من Finnhub بدلاً من Yahoo Finance
 def fetch_news(symbol):
     try:
         if not FINNHUB_API_KEY:
-            return ["⚠️ مفتاح Finnhub غير متاح"]
+            return ["️ مفتاح Finnhub غير متاح"]
         
         finnhub_symbol = symbol
         if symbol in ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
@@ -401,7 +400,6 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(np.clip(log_normalized_div, -5, 5)), 'curl': float(curl), 'flux': float(np.clip(normalized_flux, -5, 5)), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
-# ✅ إصلاح 2: وزن VGS ديناميكي
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
@@ -436,34 +434,26 @@ def get_action_recommendation(data):
             elif 'بيع قوي' in ob_signal: score -= 4; math_signals.append(f"Order Book: ضغط بيع قوي ({ob_an['sell_pressure']:.1f}%)")
             elif 'بيع معتدل' in ob_signal: score -= 2
         
-        # ✅ وزن VGS ديناميكي: كلما زادت القيمة، زاد الوزن
+        # ✅ وزن VGS ديناميكي
         vgs_dir, vgs_val = vgs.get('direction', 'محايد'), vgs.get('vgs', 0)
         if vgs_dir == 'صعودي':
             if vgs_val > 0.4:
-                score += 5
-                math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
+                score += 5; math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
             elif vgs_val > 0.15:
-                score += 4
-                math_signals.append(f"VGS صعودي قوي جداً ({vgs_val:.3f})")
+                score += 4; math_signals.append(f"VGS صعودي قوي جداً ({vgs_val:.3f})")
             elif vgs_val > 0.08:
-                score += 3
-                math_signals.append(f"VGS صعودي قوي ({vgs_val:.3f})")
+                score += 3; math_signals.append(f"VGS صعودي قوي ({vgs_val:.3f})")
             else:
-                score += 1.5
-                math_signals.append(f"VGS صعودي ({vgs_val:.3f})")
+                score += 1.5; math_signals.append(f"VGS صعودي ({vgs_val:.3f})")
         elif vgs_dir == 'هبوطي':
             if vgs_val > 0.4:
-                score -= 5
-                math_signals.append(f"VGS هبوطي استثنائي ({vgs_val:.3f})")
+                score -= 5; math_signals.append(f"VGS هبوطي استثنائي ({vgs_val:.3f})")
             elif vgs_val > 0.15:
-                score -= 4
-                math_signals.append(f"VGS هبوطي قوي جداً ({vgs_val:.3f})")
+                score -= 4; math_signals.append(f"VGS هبوطي قوي جداً ({vgs_val:.3f})")
             elif vgs_val > 0.08:
-                score -= 3
-                math_signals.append(f"VGS هبوطي قوي ({vgs_val:.3f})")
+                score -= 3; math_signals.append(f"VGS هبوطي قوي ({vgs_val:.3f})")
             else:
-                score -= 1.5
-                math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
+                score -= 1.5; math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
         
         vfm_div, vfm_flux = vfm.get('divergence', 0), vfm.get('flux', 0)
         if vfm_div > 0.5 and vfm_flux > 0: score += 2; math_signals.append(f"VFM: تدفق دخول ({vfm_div:.2f})")
@@ -561,21 +551,70 @@ def ask_qwen(data):
         logger.error(f"خطأ Qwen: {e}")
         return None
 
+# ✅ إصلاح Gemini مع تشخيص كامل
 def ask_gemini(data):
-    if not GEMINI_API_KEY: return None
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود")
+        return None
     try:
         rec = data.get('recommendation', {})
         math_sigs = rec.get('math_signals', [])
-        prompt = f"""أنت محلل مساعد. رمز: {data['symbol']}. السعر: ${data['price']:,.2f}. RSI: {data['rsi']:.1f}. الإشارات: {' | '.join(math_sigs[:3])}.
-أعطِ رأيك المختصر بالعربية (بدون Markdown): هل تتفق مع التحليل؟ ما الذي قد يفوته؟ نصيحة عملية واحدة. ليس نصيحة مالية."""
+        prompt = f"""أنت محلل تداول مساعد. رمز: {data['symbol']} ({data.get('interval', '1h')}).
+السعر: ${data['price']:,.2f}
+RSI: {data['rsi']:.1f}
+الإشارات: {' | '.join(math_sigs[:3]) if math_sigs else 'لا توجد'}
+التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}
+
+أعطِ رأيك بالعربية في 3 أسطر (بدون Markdown):
+- هل تتفق مع التحليل؟
+- ما الذي قد يفوته؟
+- نصيحة عملية واحدة
+
+لا تستخدم # أو * أو **. ليس نصيحة مالية."""
+        
         url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}}
-        res = requests.post(url, json=payload, timeout=30)
-        if res.status_code == 200 and 'candidates' in res.json() and len(res.json()['candidates']) > 0:
-            return clean_markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}
+        }
+        
+        logger.info("🤖 جاري إرسال طلب إلى Gemini AI...")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                res = requests.post(url, json=payload, timeout=30)
+                logger.info(f"📡 استجابة Gemini: {res.status_code}")
+                
+                if res.status_code == 200:
+                    result = res.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        candidate = result['candidates'][0]
+                        if 'content' in candidate and 'parts' in candidate['content']:
+                            analysis = candidate['content']['parts'][0]['text']
+                            cleaned = clean_markdown(analysis)
+                            if cleaned and len(cleaned) > 10:
+                                logger.info(f"✅ تم استلام تحليل Gemini ({len(cleaned)} حرف)")
+                                return cleaned
+                            else:
+                                logger.warning(f"⚠️ تحليل Gemini فارغ")
+                elif res.status_code == 429:
+                    logger.warning(f"⚠️ Rate limit - محاولة {attempt + 1}/{max_retries}")
+                    time.sleep(5)
+                else:
+                    logger.error(f"❌ خطأ HTTP {res.status_code}: {res.text[:200]}")
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"️ Timeout - محاولة {attempt + 1}/{max_retries}")
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f" خطأ في المحاولة {attempt + 1}: {str(e)}")
+                time.sleep(3)
+        
+        logger.error("❌ فشلت جميع محاولات Gemini AI")
         return None
     except Exception as e:
-        logger.error(f"خطأ Gemini: {e}")
+        logger.error(f"❌ خطأ عام في ask_gemini: {str(e)}")
         return None
 
 def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
@@ -630,8 +669,13 @@ R:R = 1:{data['rr']:.2f}
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
     send_long_report(f"{'='*45}\nالأخبار:\n{news_text}")
     
-    if qwen_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Qwen AI:\n{qwen_analysis}")
-    if gemini_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Gemini AI:\n{gemini_analysis}")
+    if qwen_analysis: send_long_report(f"{'='*45}\n تحليل Qwen AI:\n{qwen_analysis}")
+    
+    # ✅ Gemini مع fallback
+    if gemini_analysis:
+        send_long_report(f"{'='*45}\n تحليل Gemini AI (المساعد):\n{gemini_analysis}")
+    else:
+        send_long_report(f"{'='*45}\n⚠️ لم يتوفر تحليل Gemini AI في هذه الجلسة")
     
     part7 = f"""{'='*45}
 التوصية النهائية:
@@ -648,10 +692,26 @@ def smart_analysis(symbol, interval="1h"):
     if not data:
         send_message(f"فشل تحليل {symbol}.")
         return
-    qwen_ai = ask_qwen(data) if OPENROUTER_API_KEY else None
-    if qwen_ai: send_message(" جاري التحليل بواسطة Qwen AI...")
-    gemini_ai = ask_gemini(data) if GEMINI_API_KEY else None
-    if gemini_ai: send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
+    
+    qwen_ai = None
+    gemini_ai = None
+    
+    if OPENROUTER_API_KEY:
+        send_message("🤖 جاري التحليل بواسطة Qwen AI...")
+        qwen_ai = ask_qwen(data)
+        if qwen_ai:
+            logger.info(f"✅ Qwen AI نجح ({len(qwen_ai)} حرف)")
+        else:
+            logger.warning("⚠️ Qwen AI فشل")
+    
+    if GEMINI_API_KEY:
+        send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
+        gemini_ai = ask_gemini(data)
+        if gemini_ai:
+            logger.info(f"✅ Gemini AI نجح ({len(gemini_ai)} حرف)")
+        else:
+            logger.warning("⚠️ Gemini AI فشل - سيتم عرض رسالة بديلة")
+    
     send_unified_report(data, qwen_ai, gemini_ai)
 
 def handle_command(command):
@@ -689,7 +749,7 @@ def listen():
     logger.info(f" CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
-    logger.info(f" GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
+    logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     while True:
