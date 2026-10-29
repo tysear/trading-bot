@@ -52,8 +52,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 def clean_markdown(text):
-    if not text:
-        return text
+    if not text: return text
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
@@ -70,7 +69,6 @@ def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": CHAT_ID, "text": text}
-        logger.info(f"📤 إرسال رسالة إلى {CHAT_ID}")
         resp = requests.post(url, json=data, timeout=15)
         if resp.status_code != 200: 
             logger.error(f"❌ إرسال فشل: {resp.text}")
@@ -254,13 +252,12 @@ def advanced_differential_analysis(closes, volumes):
         return {'oscillator': osc, 'diffusion': diff, 'forced': forced, 'final_signal': np.mean(signals) if signals else 0, 'confidence': len(signals) / 3.0 if signals else 0}
     except: return {'oscillator': {}, 'diffusion': {}, 'forced': {}, 'final_signal': 0, 'confidence': 0}
 
-# ✅ إصلاح الأخبار: استخدام Finnhub بدلاً من Yahoo Finance
+# ✅ إصلاح 1: جلب الأخبار من Finnhub بدلاً من Yahoo Finance
 def fetch_news(symbol):
     try:
         if not FINNHUB_API_KEY:
             return ["⚠️ مفتاح Finnhub غير متاح"]
         
-        # تحويل الرمز إلى رمز Finnhub المناسب
         finnhub_symbol = symbol
         if symbol in ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
                       'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
@@ -272,7 +269,6 @@ def fetch_news(symbol):
         elif symbol in ['GC=F', 'XAUUSD=X']:
             finnhub_symbol = 'FOREX:XAUUSD'
         
-        # محاولة جلب أخبار الرمز المحدد
         try:
             url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={(datetime.now().date() - timedelta(days=3)).strftime('%Y-%m-%d')}&to={datetime.now().date().strftime('%Y-%m-%d')}&token={FINNHUB_API_KEY}"
             resp = requests.get(url, timeout=10)
@@ -283,7 +279,6 @@ def fetch_news(symbol):
         except:
             pass
         
-        # بديل: جلب أخبار عامة
         url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
@@ -406,6 +401,7 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(np.clip(log_normalized_div, -5, 5)), 'curl': float(curl), 'flux': float(np.clip(normalized_flux, -5, 5)), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
+# ✅ إصلاح 2: وزن VGS ديناميكي
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
@@ -440,11 +436,34 @@ def get_action_recommendation(data):
             elif 'بيع قوي' in ob_signal: score -= 4; math_signals.append(f"Order Book: ضغط بيع قوي ({ob_an['sell_pressure']:.1f}%)")
             elif 'بيع معتدل' in ob_signal: score -= 2
         
+        # ✅ وزن VGS ديناميكي: كلما زادت القيمة، زاد الوزن
         vgs_dir, vgs_val = vgs.get('direction', 'محايد'), vgs.get('vgs', 0)
-        if vgs_dir == 'صعودي' and vgs_val > 0.08: score += 3; math_signals.append(f"VGS صعودي قوي ({vgs_val:.3f})")
-        elif vgs_dir == 'صعودي': score += 1.5
-        elif vgs_dir == 'هبوطي' and vgs_val > 0.08: score -= 3; math_signals.append(f"VGS هبوطي قوي ({vgs_val:.3f})")
-        elif vgs_dir == 'هبوطي': score -= 1.5
+        if vgs_dir == 'صعودي':
+            if vgs_val > 0.4:
+                score += 5
+                math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
+            elif vgs_val > 0.15:
+                score += 4
+                math_signals.append(f"VGS صعودي قوي جداً ({vgs_val:.3f})")
+            elif vgs_val > 0.08:
+                score += 3
+                math_signals.append(f"VGS صعودي قوي ({vgs_val:.3f})")
+            else:
+                score += 1.5
+                math_signals.append(f"VGS صعودي ({vgs_val:.3f})")
+        elif vgs_dir == 'هبوطي':
+            if vgs_val > 0.4:
+                score -= 5
+                math_signals.append(f"VGS هبوطي استثنائي ({vgs_val:.3f})")
+            elif vgs_val > 0.15:
+                score -= 4
+                math_signals.append(f"VGS هبوطي قوي جداً ({vgs_val:.3f})")
+            elif vgs_val > 0.08:
+                score -= 3
+                math_signals.append(f"VGS هبوطي قوي ({vgs_val:.3f})")
+            else:
+                score -= 1.5
+                math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
         
         vfm_div, vfm_flux = vfm.get('divergence', 0), vfm.get('flux', 0)
         if vfm_div > 0.5 and vfm_flux > 0: score += 2; math_signals.append(f"VFM: تدفق دخول ({vfm_div:.2f})")
@@ -612,7 +631,7 @@ R:R = 1:{data['rr']:.2f}
     send_long_report(f"{'='*45}\nالأخبار:\n{news_text}")
     
     if qwen_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Qwen AI:\n{qwen_analysis}")
-    if gemini_analysis: send_long_report(f"{'='*45}\n تحليل Gemini AI:\n{gemini_analysis}")
+    if gemini_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Gemini AI:\n{gemini_analysis}")
     
     part7 = f"""{'='*45}
 التوصية النهائية:
@@ -630,7 +649,7 @@ def smart_analysis(symbol, interval="1h"):
         send_message(f"فشل تحليل {symbol}.")
         return
     qwen_ai = ask_qwen(data) if OPENROUTER_API_KEY else None
-    if qwen_ai: send_message("🤖 جاري التحليل بواسطة Qwen AI...")
+    if qwen_ai: send_message(" جاري التحليل بواسطة Qwen AI...")
     gemini_ai = ask_gemini(data) if GEMINI_API_KEY else None
     if gemini_ai: send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
     send_unified_report(data, qwen_ai, gemini_ai)
@@ -667,10 +686,10 @@ def handle_command(command):
 def listen():
     last_id = 0
     logger.info("🤖 البوت يبدأ الاستماع...")
-    logger.info(f"📋 CHAT_ID: {CHAT_ID}")
+    logger.info(f" CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
-    logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
+    logger.info(f" GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     while True:
@@ -684,7 +703,7 @@ def listen():
                     if 'message' in update and 'text' in update['message']:
                         incoming_chat_id = str(update['message']['chat']['id']).strip()
                         if incoming_chat_id == str(CHAT_ID).strip():
-                            logger.info(f" رسالة: {update['message']['text']}")
+                            logger.info(f"📩 رسالة: {update['message']['text']}")
                             handle_command(update['message']['text'])
                     last_id = update['update_id']
         except Exception as e:
