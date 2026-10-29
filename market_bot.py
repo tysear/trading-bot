@@ -21,7 +21,8 @@ CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+# ✅ تم تحديث اسم النموذج إلى gemini-2.0-flash
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
@@ -132,14 +133,14 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
                             save_alerted_news(original)
                             logger.info(f"✅ تم إرسال تنبيه: {original}")
             else:
                 logger.warning(f"⚠️ فشل جلب الأخبار: {resp.status_code}")
                 
         except Exception as e: 
-            logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
+            logger.error(f" خطأ في مراقبة الأخبار: {e}")
 
 def fetch_data(symbol, interval="1h"):
     try:
@@ -551,7 +552,7 @@ def ask_qwen(data):
         logger.error(f"خطأ Qwen: {e}")
         return None
 
-# ✅ إصلاح Gemini مع تشخيص كامل
+# ✅ إصلاح Gemini مع نموذج 2.0-flash
 def ask_gemini(data):
     if not GEMINI_API_KEY:
         logger.warning("⚠️ GEMINI_API_KEY غير موجود")
@@ -605,13 +606,13 @@ RSI: {data['rsi']:.1f}
                     logger.error(f"❌ خطأ HTTP {res.status_code}: {res.text[:200]}")
                     
             except requests.exceptions.Timeout:
-                logger.warning(f"️ Timeout - محاولة {attempt + 1}/{max_retries}")
+                logger.warning(f"⏱️ Timeout - محاولة {attempt + 1}/{max_retries}")
                 time.sleep(3)
             except Exception as e:
-                logger.error(f" خطأ في المحاولة {attempt + 1}: {str(e)}")
+                logger.error(f"❌ خطأ في المحاولة {attempt + 1}: {str(e)}")
                 time.sleep(3)
         
-        logger.error("❌ فشلت جميع محاولات Gemini AI")
+        logger.error(" فشلت جميع محاولات Gemini AI")
         return None
     except Exception as e:
         logger.error(f"❌ خطأ عام في ask_gemini: {str(e)}")
@@ -669,11 +670,10 @@ R:R = 1:{data['rr']:.2f}
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
     send_long_report(f"{'='*45}\nالأخبار:\n{news_text}")
     
-    if qwen_analysis: send_long_report(f"{'='*45}\n تحليل Qwen AI:\n{qwen_analysis}")
+    if qwen_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Qwen AI:\n{qwen_analysis}")
     
-    # ✅ Gemini مع fallback
     if gemini_analysis:
-        send_long_report(f"{'='*45}\n تحليل Gemini AI (المساعد):\n{gemini_analysis}")
+        send_long_report(f"{'='*45}\n🤖 تحليل Gemini AI (المساعد):\n{gemini_analysis}")
     else:
         send_long_report(f"{'='*45}\n⚠️ لم يتوفر تحليل Gemini AI في هذه الجلسة")
     
@@ -763,7 +763,7 @@ def listen():
                     if 'message' in update and 'text' in update['message']:
                         incoming_chat_id = str(update['message']['chat']['id']).strip()
                         if incoming_chat_id == str(CHAT_ID).strip():
-                            logger.info(f"📩 رسالة: {update['message']['text']}")
+                            logger.info(f" رسالة: {update['message']['text']}")
                             handle_command(update['message']['text'])
                     last_id = update['update_id']
         except Exception as e:
