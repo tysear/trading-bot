@@ -24,7 +24,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
-# ✅ قائمة النماذج البديلة لـ Gemini
 GEMINI_MODELS = [
     "gemini-1.5-flash-latest",
     "gemini-1.5-flash",
@@ -127,25 +126,18 @@ def monitor_urgent_news():
             if not FINNHUB_API_KEY: 
                 logger.warning("⚠️ FINNHUB_API_KEY غير موجود")
                 continue
-            
             url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
             resp = requests.get(url, timeout=10)
-            
             if resp.status_code == 200:
                 news_list = resp.json()[:15]
                 alerted = load_alerted_news()
-                
                 for item in news_list:
                     headline = item.get('headline', '').lower()
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
+                            send_message(f" تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
                             save_alerted_news(original)
-                            logger.info(f"✅ تم إرسال تنبيه: {original}")
-            else:
-                logger.warning(f"⚠️ فشل جلب الأخبار: {resp.status_code}")
-                
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
 
@@ -167,7 +159,6 @@ def fetch_data(symbol, interval="1h"):
 def fetch_order_book(symbol):
     if symbol not in CRYPTO_SYMBOLS: return None
     if symbol in ['GC=F', 'XAUUSD=X']: return None
-    
     binance_symbol = symbol.replace('-USD', 'USDT')
     try:
         resp = requests.get(f"https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=20", timeout=10)
@@ -209,21 +200,17 @@ def calc_damped_oscillator(closes, period=20):
         ypp = np.gradient(yp)
         yp_smooth = np.mean(yp[-3:]) if len(yp) >= 3 else yp[-1]
         ypp_smooth = np.mean(ypp[-3:]) if len(ypp) >= 3 else ypp[-1]
-        
         omega_sq = max(0.01, abs(-ypp_smooth / y_smooth)) if abs(y_smooth) > 1e-10 else 0.01
         gamma = abs(-ypp_smooth - omega_sq * y_smooth) / (2 * abs(yp_smooth)) if abs(yp_smooth) > 1e-10 else 0.3
         damp = max(0.1, gamma / (2 * np.sqrt(omega_sq)))
-        
         phase = np.arctan2(yp_smooth, y_smooth)
         dead_zone = 0.4
-        
         if np.pi/2 + dead_zone < phase < 3*np.pi/2 - dead_zone:
             pos = 'قاع'
         elif phase < np.pi/2 - dead_zone or phase > 3*np.pi/2 + dead_zone:
             pos = 'قمة'
         else:
             pos = 'محايد'
-        
         return {'regime': 'تذبذب نشط' if damp < 1 else 'تخميد عالي', 'position': pos, 'damping': damp, 'prediction': fv + y_smooth + yp_smooth + 0.5*ypp_smooth}
     except: return {'regime': 'N/A', 'position': 'محايد', 'damping': 0.5, 'prediction': closes[-1]}
 
@@ -263,8 +250,7 @@ def advanced_differential_analysis(closes, volumes):
 def fetch_news(symbol):
     try:
         if not FINNHUB_API_KEY:
-            return ["⚠️ مفتاح Finnhub غير متاح"]
-        
+            return ["️ مفتاح Finnhub غير متاح"]
         finnhub_symbol = symbol
         if symbol in ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
                       'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
@@ -275,7 +261,6 @@ def fetch_news(symbol):
             else: finnhub_symbol = 'CRYPTO:BTC'
         elif symbol in ['GC=F', 'XAUUSD=X']:
             finnhub_symbol = 'FOREX:XAUUSD'
-        
         try:
             url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={(datetime.now().date() - timedelta(days=3)).strftime('%Y-%m-%d')}&to={datetime.now().date().strftime('%Y-%m-%d')}&token={FINNHUB_API_KEY}"
             resp = requests.get(url, timeout=10)
@@ -283,16 +268,13 @@ def fetch_news(symbol):
                 news_list = resp.json()[:3]
                 if news_list:
                     return [f"• {item.get('headline', '')} ({item.get('source', '')})" for item in news_list]
-        except:
-            pass
-        
+        except: pass
         url = f"{FINNHUB_API_URL}/news?category=general&token={FINNHUB_API_KEY}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             news_list = resp.json()[:3]
             if news_list:
                 return [f"• {item.get('headline', '')} ({item.get('source', '')})" for item in news_list]
-        
         return ["لا توجد أخبار حديثة."]
     except Exception as e:
         logger.error(f"خطأ في جلب الأخبار: {e}")
@@ -408,6 +390,7 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(np.clip(log_normalized_div, -5, 5)), 'curl': float(curl), 'flux': float(np.clip(normalized_flux, -5, 5)), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
+# ✅ الإصلاح الجذري: نظام توصية آمن مع فيتو مزدوج
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
@@ -421,10 +404,25 @@ def get_action_recommendation(data):
         diff_conf = diff_an.get('confidence', 0)
         osc = diff_an.get('oscillator', {})
         diff_model = diff_an.get('diffusion', {})
+        
         score = 0
         math_signals = []
         osc_position = osc.get('position', 'محايد')
+        vgs_val = vgs.get('vgs', 0)
+        vgs_dir = vgs.get('direction', 'محايد')
+        vfm_flux = vfm.get('flux', 0)
+        vfm_div = vfm.get('divergence', 0)
         
+        # ✅ الإصلاح 1: تصحيح المذبذب بناءً على RSI
+        # إذا كان RSI < 35، المذبذب يجب أن يكون قاع وليس قمة
+        if rsi < 35 and osc_position == 'قمة':
+            osc_position = 'قاع'
+            logger.info(f"️ تصحيح المذبذب: RSI={rsi:.1f} < 35، تم تغيير القمة إلى قاع")
+        elif rsi > 65 and osc_position == 'قاع':
+            osc_position = 'قمة'
+            logger.info(f"⚠️ تصحيح المذبذب: RSI={rsi:.1f} > 65، تم تغيير القاع إلى قمة")
+        
+        # ✅ الإصلاح 2: الإشارة التفاضلية
         if diff_conf >= 0.66:
             if diff_sig > 0.5: score += 6; math_signals.append(f"التفاضلي صعودي قوي ({diff_sig:.2f})")
             elif diff_sig < -0.5: score -= 6; math_signals.append(f"التفاضلي هبوطي قوي ({diff_sig:.2f})")
@@ -432,9 +430,11 @@ def get_action_recommendation(data):
             if diff_sig > 0.3: score += 3; math_signals.append(f"التفاضلي صعودي ({diff_sig:.2f})")
             elif diff_sig < -0.3: score -= 3; math_signals.append(f"التفاضلي هبوطي ({diff_sig:.2f})")
         
+        # ✅ الإصلاح 3: المذبذب
         if osc_position == 'قمة': score -= 3; math_signals.append("المذبذب عند قمة (خصم -3)")
         elif osc_position == 'قاع': score += 3; math_signals.append("المذبذب عند قاع (إضافة +3)")
         
+        # Order Book
         if ob_an:
             ob_signal = ob_an.get('signal', '')
             if 'شراء قوي' in ob_signal: score += 4; math_signals.append(f"Order Book: ضغط شراء قوي ({ob_an['buy_pressure']:.1f}%)")
@@ -442,7 +442,7 @@ def get_action_recommendation(data):
             elif 'بيع قوي' in ob_signal: score -= 4; math_signals.append(f"Order Book: ضغط بيع قوي ({ob_an['sell_pressure']:.1f}%)")
             elif 'بيع معتدل' in ob_signal: score -= 2
         
-        vgs_dir, vgs_val = vgs.get('direction', 'محايد'), vgs.get('vgs', 0)
+        # ✅ الإصلاح 4: VGS ديناميكي معزز
         if vgs_dir == 'صعودي':
             if vgs_val > 0.4:
                 score += 5; math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
@@ -462,20 +462,32 @@ def get_action_recommendation(data):
             else:
                 score -= 1.5; math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
         
-        vfm_div, vfm_flux = vfm.get('divergence', 0), vfm.get('flux', 0)
+        # VFM
         if vfm_div > 0.5 and vfm_flux > 0: score += 2; math_signals.append(f"VFM: تدفق دخول ({vfm_div:.2f})")
         elif vfm_div < -0.5 and vfm_flux < 0: score -= 2; math_signals.append(f"VFM: تدفق خروج ({vfm_div:.2f})")
         
-        if rsi > 80: score -= 1; math_signals.append(f"RSI تشبع شديد ({rsi:.1f})")
-        elif rsi < 20: score += 1; math_signals.append(f"RSI تشبع بيعي ({rsi:.1f})")
+        # ✅ الإصلاح 5: RSI محسّن (3 مستويات)
+        if rsi > 80: 
+            score -= 2; math_signals.append(f"RSI تشبع شديد ({rsi:.1f}) -2")
+        elif rsi > 70:
+            score -= 1; math_signals.append(f"RSI مرتفع ({rsi:.1f}) -1")
+        elif rsi < 20:
+            score += 3; math_signals.append(f"RSI تشبع بيعي شديد ({rsi:.1f}) +3")
+        elif rsi < 30:
+            score += 2; math_signals.append(f"RSI تشبع بيعي ({rsi:.1f}) +2")
+        elif rsi < 40:
+            score += 1; math_signals.append(f"RSI منخفض ({rsi:.1f}) +1")
         
+        # MACD
         macd = data.get('macd', 0)
         if macd > 0 and score > 0: score += 0.5
         elif macd < 0 and score < 0: score -= 0.5
         
+        # مونت كارلو
         if mc_prob > 70 and score > 0: score += 1
         elif mc_prob < 30 and score < 0: score -= 1
         
+        # ✅ الإصلاح 6: فيتو انعكاسي (موجود سابقاً)
         veto_warning = ""
         reversal_signals = 0
         if osc_position == 'قاع': reversal_signals += 1
@@ -487,6 +499,28 @@ def get_action_recommendation(data):
         elif osc_position == 'قمة' and score > 3:
             score = 0; veto_warning = f"فيتو انعكاسي: المذبذب عند قمة! تم إلغاء Long."
         
+        # ✅ الإصلاح 7: فيتو صعودي قوي (جديد - يمنع البيع الخطأ)
+        # إذا كان VGS استثنائي + RSI تشبع بيعي + VFM تدفق إيجابي
+        if vgs_val > 0.4 and rsi < 35 and vfm_flux > 2.0:
+            if score < -2:
+                score = 0
+                veto_warning = f"🚨 فيتو صعودي قوي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}! تم إلغاء Short - ارتداد محتمل."
+                logger.warning(f"⚠️ تم تفعيل الفيتو الصعودي: VGS={vgs_val}, RSI={rsi}, VFM={vfm_flux}")
+        
+        # ✅ الإصلاح 8: كشف التعارض الشديد
+        bullish_count = sum(1 for s in math_signals if '+' in s or 'إضافة' in s)
+        bearish_count = sum(1 for s in math_signals if '-' in s or 'خصم' in s)
+        conflict_detected = abs(bullish_count - bearish_count) <= 1 and (bullish_count + bearish_count) >= 4
+        
+        if conflict_detected and abs(score) >= 5:
+            # هناك تعارض شديد - خفف التوصية
+            if score > 0:
+                score = min(score, 2)
+            else:
+                score = max(score, -2)
+            veto_warning += " ⚠️ تعارض شديد في الإشارات - توصية مخففة."
+        
+        # التوصية النهائية
         if score >= 8: action, conf = 'افتح شراء (Long) قوي جداً', 'عالية جداً'
         elif score >= 5: action, conf = 'افتح شراء (Long) قوي', 'عالية'
         elif score >= 2: action, conf = 'دخول حذر (Long)', 'متوسطة'
@@ -495,16 +529,24 @@ def get_action_recommendation(data):
         elif score >= -5: action, conf = 'افتح بيع (Short) قوي', 'عالية'
         else: action, conf = 'افتح بيع (Short) قوي جداً', 'عالية جداً'
         
+        # ✅ الإصلاح 9: إذا كان هناك فيتو، اجعل التوصية "انتظار"
+        if veto_warning and 'تم إلغاء' in veto_warning:
+            action = 'انتظار'
+            conf = 'ملغاة - ' + conf
+        
         desc_parts = [f"النقاط: {score}"]
-        if math_signals: desc_parts.append(f" رياضي: {' | '.join(math_signals[:3])}")
+        if math_signals: desc_parts.append(f" رياضي: {' | '.join(math_signals[:4])}")
         if veto_warning: desc_parts.append(veto_warning)
+        if conflict_detected: desc_parts.append(f"(تعارض: {bullish_count} صعودي vs {bearish_count} هبوطي)")
         desc_parts.append(f"(إشارات الانعكاس: {reversal_signals}/3)")
         
         return {'action': action, 'trade_type': 'LONG' if score > 1 else ('SHORT' if score < -1 else 'WAIT'), 
-                'description': ". ".join(desc_parts), 'confidence': conf, 'score': score, 'math_signals': math_signals, 'reversal_signals': reversal_signals}
+                'description': ". ".join(desc_parts), 'confidence': conf, 'score': score, 
+                'math_signals': math_signals, 'reversal_signals': reversal_signals,
+                'conflict_detected': conflict_detected}
     except Exception as e:
         logger.error(f"خطأ في التوصية: {e}")
-        return {'action': 'انتظار', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0, 'math_signals': [], 'reversal_signals': 0}
+        return {'action': 'انتظار', 'trade_type': 'WAIT', 'description': 'تعذر حساب التوصية', 'confidence': 'غير محدد', 'score': 0, 'math_signals': [], 'reversal_signals': 0, 'conflict_detected': False}
 
 def unified_analysis(symbol, interval="1h"):
     try:
@@ -540,18 +582,14 @@ def unified_analysis(symbol, interval="1h"):
         logger.error(f"خطأ في التحليل {symbol}: {e}")
         return None
 
-# ✅ Qwen AI مع تحليل الأخبار
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: return None
     try:
         rec = data.get('recommendation', {})
         math_sigs = rec.get('math_signals', [])
         math_text = " | ".join(math_sigs[:3]) if math_sigs else "لا توجد"
-        
-        # ✅ إضافة الأخبار إلى الـ prompt
         news_list = data.get('news', ['لا توجد أخبار'])
         news_text = " | ".join(news_list[:2]) if news_list else "لا توجد أخبار"
-        
         prompt = f"""أنت محلل كمي. رمز: {data['symbol']} ({data.get('interval', '1h')}). 
 السعر: ${data['price']:,.2f}
 الإشارات الرياضية: {math_text}
@@ -565,7 +603,6 @@ RSI: {data['rsi']:.1f}
 3. المخاطر (مع مراعاة تأثير الأخبار)
 
 ليس نصيحة مالية."""
-        
         headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/tysear/trading-bot", "X-Title": "Quant Trading Bot"}
         payload = {"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=60)
@@ -576,15 +613,14 @@ RSI: {data['rsi']:.1f}
         logger.error(f"خطأ Qwen: {e}")
         return None
 
-# ✅ نظام Gemini متعدد النماذج مع Fallback
 def ask_gemini(data):
     if not GEMINI_API_KEY:
-        logger.warning("️ GEMINI_API_KEY غير موجود")
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود")
         return None
-    
-    rec = data.get('recommendation', {})
-    math_sigs = rec.get('math_signals', [])
-    prompt = f"""أنت محلل تداول مساعد. رمز: {data['symbol']} ({data.get('interval', '1h')}).
+    try:
+        rec = data.get('recommendation', {})
+        math_sigs = rec.get('math_signals', [])
+        prompt = f"""أنت محلل تداول مساعد. رمز: {data['symbol']} ({data.get('interval', '1h')}).
 السعر: ${data['price']:,.2f}
 RSI: {data['rsi']:.1f}
 الإشارات: {' | '.join(math_sigs[:3]) if math_sigs else 'لا توجد'}
@@ -596,39 +632,32 @@ RSI: {data['rsi']:.1f}
 - نصيحة عملية واحدة
 
 لا تستخدم # أو * أو **. ليس نصيحة مالية."""
-    
-    for model_name in GEMINI_MODELS:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}
-            }
-            
-            logger.info(f"🤖 جرب نموذج Gemini: {model_name}")
-            
-            res = requests.post(url, json=payload, timeout=30)
-            logger.info(f"📡 استجابة {model_name}: {res.status_code}")
-            
-            if res.status_code == 200:
-                result = res.json()
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    candidate = result['candidates'][0]
-                    if 'content' in candidate and 'parts' in candidate['content']:
-                        analysis = candidate['content']['parts'][0]['text']
-                        cleaned = clean_markdown(analysis)
-                        if cleaned and len(cleaned) > 10:
-                            logger.info(f"✅ نجح نموذج {model_name} ({len(cleaned)} حرف)")
-                            return cleaned
-            
-            logger.warning(f"⚠️ فشل {model_name} - جرب التالي")
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في {model_name}: {str(e)}")
-            continue
-    
-    logger.error("❌ فشلت جميع نماذج Gemini")
-    return None
+        for model_name in GEMINI_MODELS:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}}
+                logger.info(f"🤖 جرب نموذج Gemini: {model_name}")
+                res = requests.post(url, json=payload, timeout=30)
+                logger.info(f"📡 استجابة {model_name}: {res.status_code}")
+                if res.status_code == 200:
+                    result = res.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        candidate = result['candidates'][0]
+                        if 'content' in candidate and 'parts' in candidate['content']:
+                            analysis = candidate['content']['parts'][0]['text']
+                            cleaned = clean_markdown(analysis)
+                            if cleaned and len(cleaned) > 10:
+                                logger.info(f"✅ نجح نموذج {model_name} ({len(cleaned)} حرف)")
+                                return cleaned
+                logger.warning(f"⚠️ فشل {model_name} - جرب التالي")
+            except Exception as e:
+                logger.error(f"❌ خطأ في {model_name}: {str(e)}")
+                continue
+        logger.error("❌ فشلت جميع نماذج Gemini")
+        return None
+    except Exception as e:
+        logger.error(f"❌ خطأ عام في ask_gemini: {str(e)}")
+        return None
 
 def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
     rec = data.get('recommendation', {})
@@ -683,7 +712,6 @@ R:R = 1:{data['rr']:.2f}
     send_long_report(f"{'='*45}\nالأخبار:\n{news_text}")
     
     if qwen_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Qwen AI:\n{qwen_analysis}")
-    
     if gemini_analysis:
         send_long_report(f"{'='*45}\n🤖 تحليل Gemini AI (المساعد):\n{gemini_analysis}")
     else:
@@ -704,34 +732,25 @@ def smart_analysis(symbol, interval="1h"):
     if not data:
         send_message(f"فشل تحليل {symbol}.")
         return
-    
     qwen_ai = None
     gemini_ai = None
-    
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري التحليل بواسطة Qwen AI...")
         qwen_ai = ask_qwen(data)
-        if qwen_ai:
-            logger.info(f"✅ Qwen AI نجح ({len(qwen_ai)} حرف)")
-        else:
-            logger.warning("⚠️ Qwen AI فشل")
-    
+        if qwen_ai: logger.info(f"✅ Qwen AI نجح ({len(qwen_ai)} حرف)")
     if GEMINI_API_KEY:
         send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
         gemini_ai = ask_gemini(data)
-        if gemini_ai:
-            logger.info(f"✅ Gemini AI نجح ({len(gemini_ai)} حرف)")
-        else:
-            logger.warning("⚠️ Gemini AI فشل - سيتم عرض رسالة بديلة")
-    
+        if gemini_ai: logger.info(f"✅ Gemini AI نجح ({len(gemini_ai)} حرف)")
     send_unified_report(data, qwen_ai, gemini_ai)
 
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message("""بوت التداول الكمي (Quant Bot)
+        send_message("""بوت التداول الكمي (Quant Bot) - الإصدار الآمن
 الفلسفة: المعادلات الرياضية + Order Book = 80% من القرار
 مدعوم بـ Qwen AI + Gemini AI
+مزود بنظام فيتو مزدوج لمنع التوصيات الخطرة
 
 الأوامر:
 /smart <رمز> [تايم_فريم]
@@ -757,13 +776,12 @@ def handle_command(command):
 
 def listen():
     last_id = 0
-    logger.info("🤖 البوت يبدأ الاستماع...")
+    logger.info(" البوت يبدأ الاستماع...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f" OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
     logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
-    
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
@@ -783,7 +801,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info(" Starting QUANT Trading Bot...")
+    logger.info(" Starting QUANT Trading Bot - SAFE VERSION...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
