@@ -9,6 +9,13 @@ import threading
 import numpy as np
 import re
 
+# ✅ استيراد ميزة الصور الاحترافية
+try:
+    from signal_image import generate_signal_image
+except ImportError:
+    generate_signal_image = None
+    print("⚠️ signal_image غير متوفر - سيتم العمل بدون صور")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -78,11 +85,11 @@ def send_message(text):
         data = {"chat_id": CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=15)
         if resp.status_code != 200: 
-            logger.error(f" إرسال فشل: {resp.text}")
+            logger.error(f"❌ إرسال فشل: {resp.text}")
         else:
             logger.info("✅ تم إرسال الرسالة بنجاح")
     except Exception as e: 
-        logger.error(f"❌ خطأ في الإرسال: {e}")
+        logger.error(f" خطأ في الإرسال: {e}")
 
 def send_long_report(report):
     max_length = 3800
@@ -136,10 +143,10 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f" تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
                             save_alerted_news(original)
         except Exception as e: 
-            logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
+            logger.error(f" خطأ في مراقبة الأخبار: {e}")
 
 def fetch_data(symbol, interval="1h"):
     try:
@@ -390,7 +397,7 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(np.clip(log_normalized_div, -5, 5)), 'curl': float(curl), 'flux': float(np.clip(normalized_flux, -5, 5)), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
-# ✅ الإصلاح الجذري: نظام توصية آمن مع فيتو مزدوج
+# ✅ نظام التوصية الآمن مع جميع الإصلاحات
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
@@ -414,13 +421,12 @@ def get_action_recommendation(data):
         vfm_div = vfm.get('divergence', 0)
         
         # ✅ الإصلاح 1: تصحيح المذبذب بناءً على RSI
-        # إذا كان RSI < 35، المذبذب يجب أن يكون قاع وليس قمة
         if rsi < 35 and osc_position == 'قمة':
             osc_position = 'قاع'
-            logger.info(f"️ تصحيح المذبذب: RSI={rsi:.1f} < 35، تم تغيير القمة إلى قاع")
+            logger.info(f"⚠️ تصحيح المذبذب: RSI={rsi:.1f} < 35، تم تغيير القمة إلى قاع")
         elif rsi > 65 and osc_position == 'قاع':
             osc_position = 'قمة'
-            logger.info(f"⚠️ تصحيح المذبذب: RSI={rsi:.1f} > 65، تم تغيير القاع إلى قمة")
+            logger.info(f"️ تصحيح المذبذب: RSI={rsi:.1f} > 65، تم تغيير القاع إلى قمة")
         
         # ✅ الإصلاح 2: الإشارة التفاضلية
         if diff_conf >= 0.66:
@@ -442,7 +448,7 @@ def get_action_recommendation(data):
             elif 'بيع قوي' in ob_signal: score -= 4; math_signals.append(f"Order Book: ضغط بيع قوي ({ob_an['sell_pressure']:.1f}%)")
             elif 'بيع معتدل' in ob_signal: score -= 2
         
-        # ✅ الإصلاح 4: VGS ديناميكي معزز
+        # ✅ الإصلاح 4: VGS ديناميكي
         if vgs_dir == 'صعودي':
             if vgs_val > 0.4:
                 score += 5; math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
@@ -487,7 +493,7 @@ def get_action_recommendation(data):
         if mc_prob > 70 and score > 0: score += 1
         elif mc_prob < 30 and score < 0: score -= 1
         
-        # ✅ الإصلاح 6: فيتو انعكاسي (موجود سابقاً)
+        # ✅ الإصلاح 6: فيتو انعكاسي
         veto_warning = ""
         reversal_signals = 0
         if osc_position == 'قاع': reversal_signals += 1
@@ -499,12 +505,11 @@ def get_action_recommendation(data):
         elif osc_position == 'قمة' and score > 3:
             score = 0; veto_warning = f"فيتو انعكاسي: المذبذب عند قمة! تم إلغاء Long."
         
-        # ✅ الإصلاح 7: فيتو صعودي قوي (جديد - يمنع البيع الخطأ)
-        # إذا كان VGS استثنائي + RSI تشبع بيعي + VFM تدفق إيجابي
+        # ✅ الإصلاح 7: فيتو صعودي قوي
         if vgs_val > 0.4 and rsi < 35 and vfm_flux > 2.0:
             if score < -2:
                 score = 0
-                veto_warning = f"🚨 فيتو صعودي قوي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}! تم إلغاء Short - ارتداد محتمل."
+                veto_warning = f"🚨 فيتو صعودي قوي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}! تم إلغاء Short."
                 logger.warning(f"⚠️ تم تفعيل الفيتو الصعودي: VGS={vgs_val}, RSI={rsi}, VFM={vfm_flux}")
         
         # ✅ الإصلاح 8: كشف التعارض الشديد
@@ -513,7 +518,6 @@ def get_action_recommendation(data):
         conflict_detected = abs(bullish_count - bearish_count) <= 1 and (bullish_count + bearish_count) >= 4
         
         if conflict_detected and abs(score) >= 5:
-            # هناك تعارض شديد - خفف التوصية
             if score > 0:
                 score = min(score, 2)
             else:
@@ -582,6 +586,7 @@ def unified_analysis(symbol, interval="1h"):
         logger.error(f"خطأ في التحليل {symbol}: {e}")
         return None
 
+# ✅ Qwen AI مع تحليل الأخبار
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: return None
     try:
@@ -613,6 +618,7 @@ RSI: {data['rsi']:.1f}
         logger.error(f"خطأ Qwen: {e}")
         return None
 
+# ✅ نظام Gemini متعدد النماذج
 def ask_gemini(data):
     if not GEMINI_API_KEY:
         logger.warning("⚠️ GEMINI_API_KEY غير موجود")
@@ -649,7 +655,7 @@ RSI: {data['rsi']:.1f}
                             if cleaned and len(cleaned) > 10:
                                 logger.info(f"✅ نجح نموذج {model_name} ({len(cleaned)} حرف)")
                                 return cleaned
-                logger.warning(f"⚠️ فشل {model_name} - جرب التالي")
+                logger.warning(f"️ فشل {model_name} - جرب التالي")
             except Exception as e:
                 logger.error(f"❌ خطأ في {model_name}: {str(e)}")
                 continue
@@ -658,6 +664,40 @@ RSI: {data['rsi']:.1f}
     except Exception as e:
         logger.error(f"❌ خطأ عام في ask_gemini: {str(e)}")
         return None
+
+# ✅ دالة إرسال الصورة الاحترافية (جديدة)
+def send_signal_image(data):
+    """إرسال صورة الإشارة الاحترافية"""
+    if generate_signal_image is None:
+        logger.warning("⚠️ ميزة الصور غير متوفرة")
+        return False
+    
+    try:
+        image_bytes = generate_signal_image(data)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        
+        rec = data.get('recommendation', {})
+        symbol = data.get('symbol', '')
+        action = rec.get('action', '')
+        score = rec.get('score', 0)
+        
+        caption = f"🎯 {symbol} - {action}\n Score: {score}\n⚠️ Not financial advice"
+        
+        files = {'photo': ('signal.png', image_bytes, 'image/png')}
+        payload = {'chat_id': CHAT_ID, 'caption': caption}
+        
+        resp = requests.post(url, files=files, data=payload, timeout=30)
+        
+        if resp.status_code == 200:
+            logger.info("✅ تم إرسال صورة الإشارة بنجاح")
+            return True
+        else:
+            logger.error(f"❌ فشل إرسال الصورة: {resp.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ خطأ في إنشاء/إرسال الصورة: {e}")
+        return False
 
 def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
     rec = data.get('recommendation', {})
@@ -713,7 +753,7 @@ R:R = 1:{data['rr']:.2f}
     
     if qwen_analysis: send_long_report(f"{'='*45}\n🤖 تحليل Qwen AI:\n{qwen_analysis}")
     if gemini_analysis:
-        send_long_report(f"{'='*45}\n🤖 تحليل Gemini AI (المساعد):\n{gemini_analysis}")
+        send_long_report(f"{'='*45}\n تحليل Gemini AI (المساعد):\n{gemini_analysis}")
     else:
         send_long_report(f"{'='*45}\n⚠️ لم يتوفر تحليل Gemini AI في هذه الجلسة")
     
@@ -723,25 +763,34 @@ R:R = 1:{data['rr']:.2f}
 {rec.get('description','')}
 الثقة: {rec.get('confidence','غير محدد')}
 
-️ هذا البوت كمي: 80% من القرار مبني على المعادلات. ليست نصيحة مالية."""
+⚠️ هذا البوت كمي: 80% من القرار مبني على المعادلات. ليست نصيحة مالية."""
     send_long_report(part7)
 
+# ✅ الدالة المحدثة مع ميزة الصور
 def smart_analysis(symbol, interval="1h"):
     send_message(f"جاري التحليل الكمي لـ {symbol} ({interval.upper()})...")
     data = unified_analysis(symbol, interval)
     if not data:
-        send_message(f"فشل تحليل {symbol}.")
+        send_message(f"❌ فشل تحليل {symbol}.")
         return
+    
     qwen_ai = None
     gemini_ai = None
+    
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري التحليل بواسطة Qwen AI...")
         qwen_ai = ask_qwen(data)
         if qwen_ai: logger.info(f"✅ Qwen AI نجح ({len(qwen_ai)} حرف)")
+    
     if GEMINI_API_KEY:
-        send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
+        send_message(" جاري التحليل المساعد بواسطة Gemini AI...")
         gemini_ai = ask_gemini(data)
         if gemini_ai: logger.info(f"✅ Gemini AI نجح ({len(gemini_ai)} حرف)")
+    
+    # ✅ إرسال صورة الإشارة أولاً
+    send_signal_image(data)
+    
+    # ثم التقرير النصي الكامل
     send_unified_report(data, qwen_ai, gemini_ai)
 
 def handle_command(command):
@@ -751,6 +800,7 @@ def handle_command(command):
 الفلسفة: المعادلات الرياضية + Order Book = 80% من القرار
 مدعوم بـ Qwen AI + Gemini AI
 مزود بنظام فيتو مزدوج لمنع التوصيات الخطرة
+✅ يدعم الصور الاحترافية للإشارات
 
 الأوامر:
 /smart <رمز> [تايم_فريم]
@@ -776,10 +826,10 @@ def handle_command(command):
 
 def listen():
     last_id = 0
-    logger.info(" البوت يبدأ الاستماع...")
+    logger.info("🤖 البوت يبدأ الاستماع...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
-    logger.info(f" OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
+    logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
     logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     while True:
@@ -801,7 +851,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info(" Starting QUANT Trading Bot - SAFE VERSION...")
+    logger.info("🧮 Starting QUANT Trading Bot - SAFE VERSION with Images...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
