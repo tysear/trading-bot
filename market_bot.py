@@ -24,7 +24,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
-# ✅ قائمة النماذج البديلة - سيحاول البوت كل نموذج حتى ينجح
+# ✅ قائمة النماذج البديلة لـ Gemini
 GEMINI_MODELS = [
     "gemini-1.5-flash-latest",
     "gemini-1.5-flash",
@@ -79,7 +79,7 @@ def send_message(text):
         data = {"chat_id": CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=15)
         if resp.status_code != 200: 
-            logger.error(f"❌ إرسال فشل: {resp.text}")
+            logger.error(f" إرسال فشل: {resp.text}")
         else:
             logger.info("✅ تم إرسال الرسالة بنجاح")
     except Exception as e: 
@@ -101,7 +101,7 @@ def send_long_report(report):
         report = report[cut_point:]
     total = len(parts)
     for i, part in enumerate(parts, 1):
-        suffix = f"\n\n يتبع... ({i}/{total})" if i < total else f"\n\n✅ انتهى التقرير ({i}/{total})"
+        suffix = f"\n\n⏳ يتبع... ({i}/{total})" if i < total else f"\n\n✅ انتهى التقرير ({i}/{total})"
         send_message(f"{part}{suffix}")
         time.sleep(0.5)
 
@@ -144,7 +144,7 @@ def monitor_urgent_news():
                             save_alerted_news(original)
                             logger.info(f"✅ تم إرسال تنبيه: {original}")
             else:
-                logger.warning(f"️ فشل جلب الأخبار: {resp.status_code}")
+                logger.warning(f"⚠️ فشل جلب الأخبار: {resp.status_code}")
                 
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
@@ -540,14 +540,32 @@ def unified_analysis(symbol, interval="1h"):
         logger.error(f"خطأ في التحليل {symbol}: {e}")
         return None
 
+# ✅ Qwen AI مع تحليل الأخبار
 def ask_qwen(data):
     if not OPENROUTER_API_KEY: return None
     try:
         rec = data.get('recommendation', {})
         math_sigs = rec.get('math_signals', [])
         math_text = " | ".join(math_sigs[:3]) if math_sigs else "لا توجد"
-        prompt = f"""أنت محلل كمي. رمز: {data['symbol']} ({data.get('interval', '1h')}). السعر: ${data['price']:,.2f}. الإشارات: {math_text}. التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}. RSI: {data['rsi']:.1f}.
-أعطِ تحليلاً كمياً مختصراً بالعربية في 3 نقاط فقط (بدون رموز Markdown): 1. القرار 2. التفسير 3. المخاطر. ليس نصيحة مالية."""
+        
+        # ✅ إضافة الأخبار إلى الـ prompt
+        news_list = data.get('news', ['لا توجد أخبار'])
+        news_text = " | ".join(news_list[:2]) if news_list else "لا توجد أخبار"
+        
+        prompt = f"""أنت محلل كمي. رمز: {data['symbol']} ({data.get('interval', '1h')}). 
+السعر: ${data['price']:,.2f}
+الإشارات الرياضية: {math_text}
+الإشارة التفاضلية: {data['diff_analysis'].get('final_signal',0):.2f}
+RSI: {data['rsi']:.1f}
+الأخبار: {news_text}
+
+أعطِ تحليلاً كمياً مختصراً بالعربية في 3 نقاط فقط (بدون رموز Markdown):
+1. القرار بناءً على الرياضيات والأخبار
+2. التفسير الفيزيائي لحركة السعر
+3. المخاطر (مع مراعاة تأثير الأخبار)
+
+ليس نصيحة مالية."""
+        
         headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/tysear/trading-bot", "X-Title": "Quant Trading Bot"}
         payload = {"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         res = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=60)
@@ -561,7 +579,7 @@ def ask_qwen(data):
 # ✅ نظام Gemini متعدد النماذج مع Fallback
 def ask_gemini(data):
     if not GEMINI_API_KEY:
-        logger.warning("⚠️ GEMINI_API_KEY غير موجود")
+        logger.warning("️ GEMINI_API_KEY غير موجود")
         return None
     
     rec = data.get('recommendation', {})
@@ -579,7 +597,6 @@ RSI: {data['rsi']:.1f}
 
 لا تستخدم # أو * أو **. ليس نصيحة مالية."""
     
-    # ✅ جرب كل نموذج بالترتيب حتى ينجح أحدها
     for model_name in GEMINI_MODELS:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
@@ -604,8 +621,7 @@ RSI: {data['rsi']:.1f}
                             logger.info(f"✅ نجح نموذج {model_name} ({len(cleaned)} حرف)")
                             return cleaned
             
-            # إذا فشل هذا النموذج، جرب التالي
-            logger.warning(f"️ فشل {model_name} - جرب التالي")
+            logger.warning(f"⚠️ فشل {model_name} - جرب التالي")
             
         except Exception as e:
             logger.error(f"❌ خطأ في {model_name}: {str(e)}")
@@ -679,7 +695,7 @@ R:R = 1:{data['rr']:.2f}
 {rec.get('description','')}
 الثقة: {rec.get('confidence','غير محدد')}
 
-⚠️ هذا البوت كمي: 80% من القرار مبني على المعادلات. ليست نصيحة مالية."""
+️ هذا البوت كمي: 80% من القرار مبني على المعادلات. ليست نصيحة مالية."""
     send_long_report(part7)
 
 def smart_analysis(symbol, interval="1h"):
@@ -693,20 +709,20 @@ def smart_analysis(symbol, interval="1h"):
     gemini_ai = None
     
     if OPENROUTER_API_KEY:
-        send_message(" جاري التحليل بواسطة Qwen AI...")
+        send_message("🤖 جاري التحليل بواسطة Qwen AI...")
         qwen_ai = ask_qwen(data)
         if qwen_ai:
             logger.info(f"✅ Qwen AI نجح ({len(qwen_ai)} حرف)")
         else:
-            logger.warning("️ Qwen AI فشل")
+            logger.warning("⚠️ Qwen AI فشل")
     
     if GEMINI_API_KEY:
-        send_message(" جاري التحليل المساعد بواسطة Gemini AI...")
+        send_message("🤖 جاري التحليل المساعد بواسطة Gemini AI...")
         gemini_ai = ask_gemini(data)
         if gemini_ai:
             logger.info(f"✅ Gemini AI نجح ({len(gemini_ai)} حرف)")
         else:
-            logger.warning("️ Gemini AI فشل - سيتم عرض رسالة بديلة")
+            logger.warning("⚠️ Gemini AI فشل - سيتم عرض رسالة بديلة")
     
     send_unified_report(data, qwen_ai, gemini_ai)
 
@@ -744,9 +760,9 @@ def listen():
     logger.info("🤖 البوت يبدأ الاستماع...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM_TOKEN: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
-    logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
+    logger.info(f" OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
     logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
-    logger.info(f" FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
+    logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     
     while True:
         try:
@@ -759,7 +775,7 @@ def listen():
                     if 'message' in update and 'text' in update['message']:
                         incoming_chat_id = str(update['message']['chat']['id']).strip()
                         if incoming_chat_id == str(CHAT_ID).strip():
-                            logger.info(f" رسالة: {update['message']['text']}")
+                            logger.info(f"📩 رسالة: {update['message']['text']}")
                             handle_command(update['message']['text'])
                     last_id = update['update_id']
         except Exception as e:
@@ -767,7 +783,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("🧮 Starting QUANT Trading Bot...")
+    logger.info(" Starting QUANT Trading Bot...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
