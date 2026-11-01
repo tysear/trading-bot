@@ -20,6 +20,11 @@ try:
 except ImportError:
     get_smc_analysis = None
 
+try:
+    from trade_logger import log_trade, get_performance, get_recent_trades
+except ImportError:
+    log_trade = None
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -51,14 +56,47 @@ URGENT_KEYWORDS = [
     'hikes rates', 'cuts rates', 'powell speech', 'federal open market'
 ]
 
-CRYPTO_SYMBOLS = [
+# ✅ قائمة شاملة لجميع الأصول العالمية
+ALL_SYMBOLS = [
+    # 💰 العملات الرقمية (20)
     'BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
     'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
     'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD',
-    'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD'
+    'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD',
+    
+    # 🥇 المعادن الثمينة (2)
+    'GC=F', 'SI=F',
+    
+    # 🛢️ الطاقة (1)
+    'CL=F',
+    
+    # 💱 العملات الرئيسية (3)
+    'EURUSD=X', 'GBPUSD=X', 'USDJPY=X',
+    
+    # 🌾 السلع الزراعية (6)
+    'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F',
+    
+    # 📈 مؤشرات الأسهم (5)
+    '^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX',
+    
+    # 🏢 الأسهم الكبرى (8)
+    'AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX',
 ]
 
+CRYPTO_SYMBOLS = [s for s in ALL_SYMBOLS if s.endswith('-USD')]
+COMMODITIES = ['GC=F', 'SI=F', 'CL=F', 'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F']
+FOREX_SYMBOLS = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X']
+INDICES = ['^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX']
+STOCKS = ['AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX']
+
 app = Flask(__name__)
+
+# ✅ تسجيل Dashboard
+try:
+    from dashboard import dashboard_bp
+    app.register_blueprint(dashboard_bp)
+except ImportError:
+    logger.warning("⚠️ Dashboard غير متاح")
 
 @app.route('/')
 def home(): return "Bot running!"
@@ -169,7 +207,6 @@ def fetch_data(symbol, interval="1h"):
 
 def fetch_order_book(symbol):
     if symbol not in CRYPTO_SYMBOLS: return None
-    if symbol in ['GC=F', 'XAUUSD=X']: return None
     binance_symbol = symbol.replace('-USD', 'USDT')
     try:
         resp = requests.get(f"https://api.binance.com/api/v3/depth?symbol={binance_symbol}&limit=20", timeout=10)
@@ -186,8 +223,24 @@ def fetch_order_book(symbol):
                 spread = ba - bb
                 sups = [{'price': float(b[0]), 'volume': float(b[1])} for b in bids if float(b[1]) > tbv * 0.15][:3]
                 ress = [{'price': float(a[0]), 'volume': float(a[1])} for a in asks if float(a[1]) > tav * 0.15][:3]
+                
+                # ✅ كشف الحيتان
+                whale_detected = False
+                whale_info = ""
+                for bid in bids[:5]:
+                    if float(bid[1]) > tbv * 0.25:
+                        whale_detected = True
+                        whale_info = f"🐋 حوت شراء: ${float(bid[0]):.2f} ({float(bid[1])/tbv*100:.1f}%)"
+                        break
+                for ask in asks[:5]:
+                    if float(ask[1]) > tav * 0.25:
+                        whale_detected = True
+                        whale_info = f"🐋 حوت بيع: ${float(ask[0]):.2f} ({float(ask[1])/tav*100:.1f}%)"
+                        break
+                
                 return {'best_bid': bb, 'best_ask': ba, 'spread': spread, 'spread_percent': (spread/ba)*100 if ba>0 else 0,
-                        'buy_pressure': bp, 'sell_pressure': sp, 'support_levels': sups, 'resistance_levels': ress, 'source': 'Binance', 'estimated': False}
+                        'buy_pressure': bp, 'sell_pressure': sp, 'support_levels': sups, 'resistance_levels': ress, 
+                        'source': 'Binance', 'estimated': False, 'whale_detected': whale_detected, 'whale_info': whale_info}
     except: pass
     return None
 
@@ -199,7 +252,7 @@ def analyze_order_book(ob):
     elif sp > 65: sig, strn = 'ضغط بيع قوي', 'قوي'
     elif sp > 55: sig, strn = 'ضغط بيع معتدل', 'متوسط'
     else: sig, strn = 'توازن', 'ضعيف'
-    return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'source': ob.get('source'), 'estimated': ob.get('estimated')}
+    return {'signal': sig, 'strength': strn, 'buy_pressure': bp, 'sell_pressure': sp, 'source': ob.get('source'), 'estimated': ob.get('estimated'), 'whale_detected': ob.get('whale_detected', False), 'whale_info': ob.get('whale_info', '')}
 
 def calc_damped_oscillator(closes, period=20):
     try:
@@ -263,15 +316,18 @@ def fetch_news(symbol):
         if not FINNHUB_API_KEY:
             return ["⚠️ مفتاح Finnhub غير متاح"]
         finnhub_symbol = symbol
-        if symbol in ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
-                      'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
-                      'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD',
-                      'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD']:
+        if symbol in CRYPTO_SYMBOLS:
             if 'BTC' in symbol: finnhub_symbol = 'CRYPTO:BTC'
             elif 'ETH' in symbol: finnhub_symbol = 'CRYPTO:ETH'
             else: finnhub_symbol = 'CRYPTO:BTC'
-        elif symbol in ['GC=F', 'XAUUSD=X']:
-            finnhub_symbol = 'FOREX:XAUUSD'
+        elif symbol == 'GC=F': finnhub_symbol = 'FOREX:XAUUSD'
+        elif symbol == 'SI=F': finnhub_symbol = 'FOREX:XAGUSD'
+        elif symbol == 'CL=F': finnhub_symbol = 'ENERGY:WTI'
+        elif symbol == 'EURUSD=X': finnhub_symbol = 'FOREX:EURUSD'
+        elif symbol == 'GBPUSD=X': finnhub_symbol = 'FOREX:GBPUSD'
+        elif symbol == 'USDJPY=X': finnhub_symbol = 'FOREX:USDJPY'
+        elif symbol in STOCKS: finnhub_symbol = symbol
+        
         try:
             url = f"{FINNHUB_API_URL}/company-news?symbol={finnhub_symbol}&from={(datetime.now().date() - timedelta(days=3)).strftime('%Y-%m-%d')}&to={datetime.now().date().strftime('%Y-%m-%d')}&token={FINNHUB_API_KEY}"
             resp = requests.get(url, timeout=10)
@@ -401,7 +457,6 @@ def calc_vfm(closes, volumes):
         return {'divergence': float(np.clip(log_normalized_div, -5, 5)), 'curl': float(curl), 'flux': float(np.clip(normalized_flux, -5, 5)), 'signal': sig, 'strength': strn}
     except: return {'divergence': 0, 'curl': 0, 'flux': 0, 'signal': 'خطأ', 'strength': 'غير محدد'}
 
-# ✅ نظام التوصية مع SMC
 def get_action_recommendation(data):
     try:
         vgs = data.get('vgs', {})
@@ -425,13 +480,9 @@ def get_action_recommendation(data):
         vfm_flux = vfm.get('flux', 0)
         vfm_div = vfm.get('divergence', 0)
         
-        # تصحيح المذبذب بناءً على RSI
-        if rsi < 35 and osc_position == 'قمة':
-            osc_position = 'قاع'
-        elif rsi > 65 and osc_position == 'قاع':
-            osc_position = 'قمة'
+        if rsi < 35 and osc_position == 'قمة': osc_position = 'قاع'
+        elif rsi > 65 and osc_position == 'قاع': osc_position = 'قمة'
         
-        # الإشارة التفاضلية
         if diff_conf >= 0.66:
             if diff_sig > 0.5: score += 6; math_signals.append(f"التفاضلي صعودي قوي ({diff_sig:.2f})")
             elif diff_sig < -0.5: score -= 6; math_signals.append(f"التفاضلي هبوطي قوي ({diff_sig:.2f})")
@@ -439,19 +490,18 @@ def get_action_recommendation(data):
             if diff_sig > 0.3: score += 3; math_signals.append(f"التفاضلي صعودي ({diff_sig:.2f})")
             elif diff_sig < -0.3: score -= 3; math_signals.append(f"التفاضلي هبوطي ({diff_sig:.2f})")
         
-        # المذبذب
         if osc_position == 'قمة': score -= 3; math_signals.append("المذبذب عند قمة (-3)")
         elif osc_position == 'قاع': score += 3; math_signals.append("المذبذب عند قاع (+3)")
         
-        # Order Book
         if ob_an:
             ob_signal = ob_an.get('signal', '')
             if 'شراء قوي' in ob_signal: score += 4; math_signals.append(f"Order Book: شراء قوي ({ob_an['buy_pressure']:.1f}%)")
             elif 'شراء معتدل' in ob_signal: score += 2
             elif 'بيع قوي' in ob_signal: score -= 4; math_signals.append(f"Order Book: بيع قوي ({ob_an['sell_pressure']:.1f}%)")
             elif 'بيع معتدل' in ob_signal: score -= 2
+            if ob_an.get('whale_detected'):
+                math_signals.append(ob_an['whale_info'])
         
-        # VGS ديناميكي
         if vgs_dir == 'صعودي':
             if vgs_val > 0.4: score += 5; math_signals.append(f"VGS صعودي استثنائي ({vgs_val:.3f})")
             elif vgs_val > 0.15: score += 4; math_signals.append(f"VGS صعودي قوي ({vgs_val:.3f})")
@@ -463,51 +513,39 @@ def get_action_recommendation(data):
             elif vgs_val > 0.08: score -= 3; math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
             else: score -= 1.5; math_signals.append(f"VGS هبوطي ({vgs_val:.3f})")
         
-        # VFM
         if vfm_div > 0.5 and vfm_flux > 0: score += 2; math_signals.append(f"VFM: تدفق دخول ({vfm_div:.2f})")
         elif vfm_div < -0.5 and vfm_flux < 0: score -= 2; math_signals.append(f"VFM: تدفق خروج ({vfm_div:.2f})")
         
-        # RSI محسّن
         if rsi > 80: score -= 2; math_signals.append(f"RSI تشبع شديد ({rsi:.1f})")
         elif rsi > 70: score -= 1; math_signals.append(f"RSI مرتفع ({rsi:.1f})")
         elif rsi < 20: score += 3; math_signals.append(f"RSI تشبع بيعي ({rsi:.1f})")
         elif rsi < 30: score += 2; math_signals.append(f"RSI تشبع بيعي ({rsi:.1f})")
         elif rsi < 40: score += 1; math_signals.append(f"RSI منخفض ({rsi:.1f})")
         
-        # MACD
         macd = data.get('macd', 0)
         if macd > 0 and score > 0: score += 0.5
         elif macd < 0 and score < 0: score -= 0.5
         
-        # مونت كارلو
         if mc_prob > 70 and score > 0: score += 1
         elif mc_prob < 30 and score < 0: score -= 1
         
-        # ✅ SMC - الطبقة الجديدة
         if smc:
             smc_score = smc.get('score', 0)
             smc_signals = smc.get('signals', [])
-            
-            # إضافة نقاط SMC (بحد أقصى ±8)
             smc_score = max(-8, min(8, smc_score))
             score += smc_score
-            
             if smc_signals:
                 for sig in smc_signals[:3]:
                     math_signals.append(f"SMC: {sig}")
-            
-            # معلومات SMC للتقرير
             bos = smc.get('bos', {})
             choch = smc.get('choch', {})
             pd = smc.get('premium_discount', {})
-            
             if bos.get('type') != 'NONE':
                 data['smc_bos'] = f"{bos['type']} عند {bos['level']:.3f}"
             if choch.get('type') != 'NONE':
                 data['smc_choch'] = f"{choch['type']} عند {choch['level']:.3f}"
             data['smc_pd'] = f"{pd['zone']} ({pd['percentage']:.0f}%)"
         
-        # فيتو انعكاسي
         veto_warning = ""
         reversal_signals = 0
         if osc_position == 'قاع': reversal_signals += 1
@@ -519,13 +557,11 @@ def get_action_recommendation(data):
         elif osc_position == 'قمة' and score > 3:
             score = 0; veto_warning = f"فيتو انعكاسي: المذبذب عند قمة! تم إلغاء Long."
         
-        # فيتو صعودي قوي
         if vgs_val > 0.4 and rsi < 35 and vfm_flux > 2.0:
             if score < -2:
                 score = 0
                 veto_warning = f"🚨 فيتو صعودي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}!"
         
-        # كشف التعارض
         bullish_count = sum(1 for s in math_signals if '+' in s or 'إضافة' in s or 'صعودي' in s or 'قاع' in s)
         bearish_count = sum(1 for s in math_signals if '-' in s or 'خصم' in s or 'هبوطي' in s or 'قمة' in s)
         conflict_detected = abs(bullish_count - bearish_count) <= 1 and (bullish_count + bearish_count) >= 4
@@ -535,7 +571,6 @@ def get_action_recommendation(data):
             else: score = max(score, -2)
             veto_warning += " ⚠️ تعارض شديد - توصية مخففة."
         
-        # التوصية النهائية
         if score >= 8: action, conf = 'افتح شراء (Long) قوي جداً', 'عالية جداً'
         elif score >= 5: action, conf = 'افتح شراء (Long) قوي', 'عالية'
         elif score >= 2: action, conf = 'دخول حذر (Long)', 'متوسطة'
@@ -583,7 +618,6 @@ def unified_analysis(symbol, interval="1h"):
         ob_an = analyze_order_book(ob) if ob else None
         diff_an = advanced_differential_analysis(closes, volumes)
         
-        # ✅ تحليل SMC
         smc_data = None
         if get_smc_analysis:
             try:
@@ -603,13 +637,11 @@ def unified_analysis(symbol, interval="1h"):
         
         result = {'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr, 'interval': interval, 'kelly': kelly, 'mc': mc, 'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 'news': news, 'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': rec, 'order_book': ob, 'ob_analysis': ob_an, 'diff_analysis': diff_an, 'smc': smc_data}
         
-        # إضافة معلومات SMC للتقرير
         if smc_data:
             bos = smc_data.get('bos', {})
             choch = smc_data.get('choch', {})
             pd = smc_data.get('premium_discount', {})
             liquidity = smc_data.get('liquidity', {})
-            
             if bos.get('type') != 'NONE':
                 result['smc_bos'] = f"{bos['type'].replace('BOS_', '')} عند {bos['level']:.3f} (قوة {bos['strength']*100:.0f}%)"
             if choch.get('type') != 'NONE':
@@ -632,7 +664,6 @@ def ask_qwen(data):
         news_list = data.get('news', ['لا توجد أخبار'])
         news_text = " | ".join(news_list[:2]) if news_list else "لا توجد أخبار"
         
-        # ✅ إضافة معلومات SMC
         smc_info = ""
         if data.get('smc_bos'): smc_info += f"BOS: {data['smc_bos']}. "
         if data.get('smc_choch'): smc_info += f"CHoCH: {data['smc_choch']}. "
@@ -736,7 +767,7 @@ def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
     math_sigs = rec.get('math_signals', [])
     dir_display = 'شراء' if rec.get('trade_type')=='LONG' else 'بيع' if rec.get('trade_type')=='SHORT' else 'انتظار'
     
-    part1 = f"""التقرير الكمي (4H) لـ {data['symbol']}
+    part1 = f"""التقرير الكمي ({interval}) لـ {data['symbol']}
 {'='*45}
 السعر الحالي: ${data['price']:,.2f}
 التوصية: {dir_display}
@@ -754,7 +785,6 @@ R:R = 1:{data['rr']:.2f}
     part1 += f"\nالمؤشرات:\n- RSI: {data['rsi']:.1f}\n- MACD: {data['macd']:.2f}\n- ATR: ${data['atr']:,.2f}\n\nKelly: {kelly.get('kelly_safe', 0)*100:.1f}%\nمونت كارلو: {mc.get('prob_profit',0):.1f}%"
     send_long_report(part1)
     
-    # ✅ قسم SMC الجديد
     smc_section = f"""{'='*45}
 🏦 Smart Money Concepts (SMC):
 """
@@ -785,10 +815,11 @@ R:R = 1:{data['rr']:.2f}
     send_long_report(part3)
     
     if ob and ob_an:
-        part4 = f"{'='*45}\nOrder Book:\nBid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}\nشراء: {ob_an['buy_pressure']:.1f}% | بيع: {ob_an['sell_pressure']:.1f}%\n{ob_an['signal']}"
+        whale_text = f"\n{ob_an['whale_info']}" if ob_an.get('whale_detected') else ""
+        part4 = f"{'='*45}\nOrder Book:\nBid: ${ob['best_bid']:,.4f} | Ask: ${ob['best_ask']:,.4f}\nشراء: {ob_an['buy_pressure']:.1f}% | بيع: {ob_an['sell_pressure']:.1f}%\n{ob_an['signal']}{whale_text}"
         send_long_report(part4)
     else:
-        send_long_report(f"{'='*45}\nOrder Book: غير متاح")
+        send_long_report(f"{'='*45}\nOrder Book: غير متاح لهذا الأصل")
     
     news_text = "\n\n".join(data.get('news', ['لا توجد أخبار']))
     send_long_report(f"{'='*45}\nالأخبار:\n{news_text}")
@@ -805,8 +836,61 @@ R:R = 1:{data['rr']:.2f}
 {rec.get('description','')}
 الثقة: {rec.get('confidence','غير محدد')}
 
-⚠️ بوت كمي: 80% معادلات. ليست نصيحة مالية."""
+⚠️ بوت كمي: 80% معادلات. ليست نصيحة مالية.
+
+📊 Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')}/dashboard"""
     send_long_report(part7)
+
+# ✅ الفحص الخفيف (Light Scan)
+def auto_market_scan():
+    """فحص خفيف كل 60 دقيقة للرموز الرئيسية فقط"""
+    logger.info("📡 بدء المراقبة الخفيفة (كل 60 دقيقة)...")
+    watchlist = [
+        'BTC-USD', 'ETH-USD', 'XRP-USD',
+        'GC=F', 'EURUSD=X',
+        '^GSPC',
+    ]
+    
+    while True:
+        try:
+            time.sleep(3600)  # 60 دقيقة
+            logger.info("🔄 بدء الفحص الخفيف...")
+            
+            for symbol in watchlist:
+                data = fetch_data(symbol, "4h")
+                if not data:
+                    continue
+                
+                closes = data['closes']
+                volumes = data['volumes']
+                rsi = calc_rsi(closes)
+                vgs = calc_vgs(closes, volumes)
+                
+                vgs_val = vgs.get('vgs', 0)
+                vgs_dir = vgs.get('direction', 'محايد')
+                
+                score = 0
+                if vgs_dir == 'صعودي' and vgs_val > 0.4: score += 5
+                elif vgs_dir == 'هبوطي' and vgs_val > 0.4: score -= 5
+                
+                if rsi < 25: score += 2
+                elif rsi > 75: score -= 2
+                
+                if abs(score) >= 5:
+                    emoji = "🟢" if score > 0 else "🔴"
+                    direction = "شراء" if score > 0 else "بيع"
+                    alert_msg = f"""{emoji} تنبيه سريع!
+{symbol} (4H): {direction} قوي
+VGS: {vgs_val:.3f} {vgs_dir}
+RSI: {rsi:.1f}
+السعر: ${closes[-1]:.2f}
+
+استخدم /smart {symbol} 4h للتحليل الكامل."""
+                    send_message(alert_msg)
+                    
+        except Exception as e:
+            logger.error(f"❌ خطأ في المراقبة: {e}")
+            time.sleep(300)
 
 def smart_analysis(symbol, interval="1h"):
     send_message(f"جاري التحليل الكمي لـ {symbol} ({interval.upper()})...")
@@ -828,27 +912,75 @@ def smart_analysis(symbol, interval="1h"):
     
     send_signal_image(data)
     send_unified_report(data, qwen_ai, gemini_ai)
+    
+    # ✅ تسجيل التوصية
+    if log_trade:
+        rec = data.get('recommendation', {})
+        log_trade(
+            symbol=data['symbol'],
+            action=rec.get('action', ''),
+            price=data['price'],
+            score=rec.get('score', 0),
+            tp1=data.get('tp1', 0),
+            tp2=data.get('tp2', 0),
+            tp3=data.get('tp3', 0),
+            sl=data.get('sl', 0)
+        )
+        logger.info(f"✅ تم تسجيل التوصية: {symbol}")
 
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        send_message("""بوت التداول الكمي - SMC Edition
+        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')
+        send_message(f"""🌍 بوت التداول الكمي - Global Edition
 المعادلات + Order Book + Smart Money = 80% من القرار
 مدعوم بـ Qwen AI + Gemini AI
 
-الأوامر:
+📊 الأصول المدعومة (45+ أصل):
+💰 كريبتو: BTC, ETH, XRP, SOL, BNB...
+🥇 معادن: الذهب (GC=F), الفضة (SI=F)
+🛢️ طاقة: النفط (CL=F)
+💱 فوركس: يورو (EURUSD=X), استرليني (GBPUSD=X), ين (USDJPY=X)
+🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F), فول الصويا (ZS=F), البن (KC=F), السكر (SB=F), القطن (CT=F)
+📈 مؤشرات: S&P500 (^GSPC), NASDAQ (^IXIC), Dow (^DJI), Russell (^RUT), VIX (^VIX)
+🏢 أسهم كبرى: Apple (AAPL), Tesla (TSLA), Microsoft (MSFT), Amazon (AMZN), NVIDIA (NVDA), Google (GOOGL), Meta (META), Netflix (NFLX)
+
+📱 الأوامر:
 /smart <رمز> [تايم_فريم]
+/stats - إحصائيات البوت
+/dashboard - لوحة التحكم
+
 أمثلة:
 /smart BTC-USD 4h
-/smart XRP-USD 4h
-/smart GC=F 4h
-/help""")
+/smart GC=F 4h (الذهب)
+/smart EURUSD=X 4h (يورو/دولار)
+/smart CL=F 1h (النفط)
+/smart AAPL 1d (Apple)
+/smart ^GSPC 1d (S&P 500)
+/help
+
+🌐 Dashboard: {dashboard_url}/dashboard""")
+    elif cmd == '/stats':
+        if get_performance:
+            stats = get_performance()
+            stats_msg = f"""📊 إحصائيات البوت:
+• إجمالي التوصيات: {stats.get('total', 0)}
+• الرابحة: {stats.get('wins', 0)}
+• الخاسرة: {stats.get('losses', 0)}
+• معدل النجاح: {stats.get('win_rate', 0)}%
+• قيد الانتظار: {stats.get('pending', 0)}"""
+            send_message(stats_msg)
+        else:
+            send_message("⚠️ إحصائيات غير متاحة")
+    elif cmd == '/dashboard':
+        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')
+        send_message(f"🌐 لوحة التحكم:\n{dashboard_url}/dashboard")
     elif cmd.startswith('/smart'):
         parts = command.split(' ')
         if len(parts) < 2:
             send_message("الاستخدام: /smart <رمز> [تايم_فريم]")
             return
-        symbol = parts[1].strip().upper().replace(' ', '')
+        symbol = parts[1].strip()
         interval = parts[2].strip().lower() if len(parts) > 2 else "1h"
         valid_intervals = ['1m', '2m', '5m', '15m', '30m', '60m', '1h', '4h', '90m', '1d', '5d', '1wk', '1mo']
         if interval not in valid_intervals:
@@ -856,7 +988,7 @@ def handle_command(command):
             return
         smart_analysis(symbol, interval)
     elif cmd == '/help':
-        send_message("الأوامر:\n/smart <رمز> [15m, 1h, 4h, 1d]\n/help")
+        send_message("الأوامر:\n/smart <رمز> [15m, 1h, 4h, 1d]\n/stats\n/dashboard\n/help")
 
 def listen():
     last_id = 0
@@ -867,6 +999,8 @@ def listen():
     logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     logger.info(f"🏦 SMC: {'نعم' if get_smc_analysis else 'لا'}")
+    logger.info(f"📊 Trade Logger: {'نعم' if log_trade else 'لا'}")
+    logger.info(f"🌍 الأصول: {len(ALL_SYMBOLS)} أصل مدعوم")
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
@@ -886,7 +1020,8 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("🧮 Starting QUANT Trading Bot - SMC EDITION...")
+    logger.info("🧮 Starting QUANT Trading Bot - PROFESSIONAL EDITION...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
+    threading.Thread(target=auto_market_scan, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
