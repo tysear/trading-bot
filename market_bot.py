@@ -168,7 +168,7 @@ def save_alerted_news(headline):
     except: pass
 
 def monitor_urgent_news():
-    logger.info("🔍 بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
+    logger.info(" بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
     while True:
         try:
             time.sleep(300)
@@ -185,22 +185,62 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n {item.get('url', '')}")
                             save_alerted_news(original)
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
 
+# ✅ دالة fetch_data المحدثة لدعم جميع الفريمات
 def fetch_data(symbol, interval="1h"):
     try:
+        # ✅ تحديد الفترة المناسبة حسب الفريم الزمني
+        if interval in ['1m', '2m', '5m']:
+            period = "7d"
+        elif interval in ['15m', '30m']:
+            period = "1mo"
+        elif interval in ['60m', '1h', '90m']:
+            period = "2mo"
+        elif interval in ['4h']:
+            period = "6mo"
+        elif interval in ['1d', '5d']:
+            period = "1y"
+        elif interval in ['1wk']:
+            period = "5y"
+        elif interval in ['1mo']:
+            period = "10y"
+        else:
+            period = "1mo"
+        
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1mo", interval=interval)
-        if hist.empty: return None
-        closes, highs, lows, volumes = hist['Close'].tolist(), hist['High'].tolist(), hist['Low'].tolist(), hist['Volume'].tolist()
-        cleaned = [{'close': c, 'high': h, 'low': l, 'volume': v} for c, h, l, v in zip(closes, highs, lows, volumes) 
-                   if not np.isnan(c) and not np.isnan(h) and not np.isnan(l) and not np.isnan(v) and c > 0]
-        if len(cleaned) < 50: return None
-        return {'closes': [d['close'] for d in cleaned], 'highs': [d['high'] for d in cleaned], 
-                'lows': [d['low'] for d in cleaned], 'volumes': [d['volume'] for d in cleaned], 'interval': interval}
+        hist = ticker.history(period=period, interval=interval)
+        
+        if hist.empty:
+            logger.warning(f"⚠️ لا توجد بيانات لـ {symbol} على فريم {interval}")
+            return None
+        
+        closes = hist['Close'].tolist()
+        highs = hist['High'].tolist()
+        lows = hist['Low'].tolist()
+        volumes = hist['Volume'].tolist()
+        
+        # تنظيف البيانات من القيم الفارغة
+        cleaned = [
+            {'close': c, 'high': h, 'low': l, 'volume': v}
+            for c, h, l, v in zip(closes, highs, lows, volumes)
+            if not np.isnan(c) and not np.isnan(h) and not np.isnan(l) and not np.isnan(v) and c > 0
+        ]
+        
+        if len(cleaned) < 50:
+            logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}: {len(cleaned)} شمعة (المطلوب 50)")
+            return None
+        
+        return {
+            'closes': [d['close'] for d in cleaned],
+            'highs': [d['high'] for d in cleaned],
+            'lows': [d['low'] for d in cleaned],
+            'volumes': [d['volume'] for d in cleaned],
+            'interval': interval
+        }
     except Exception as e:
         logger.error(f"خطأ في جلب البيانات {symbol}: {e}")
         return None
@@ -560,7 +600,7 @@ def get_action_recommendation(data):
         if vgs_val > 0.4 and rsi < 35 and vfm_flux > 2.0:
             if score < -2:
                 score = 0
-                veto_warning = f"🚨 فيتو صعودي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}!"
+                veto_warning = f" فيتو صعودي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}!"
         
         bullish_count = sum(1 for s in math_signals if '+' in s or 'إضافة' in s or 'صعودي' in s or 'قاع' in s)
         bearish_count = sum(1 for s in math_signals if '-' in s or 'خصم' in s or 'هبوطي' in s or 'قمة' in s)
@@ -877,7 +917,7 @@ def auto_market_scan():
                 elif rsi > 75: score -= 2
                 
                 if abs(score) >= 5:
-                    emoji = "🟢" if score > 0 else "🔴"
+                    emoji = "🟢" if score > 0 else ""
                     direction = "شراء" if score > 0 else "بيع"
                     alert_msg = f"""{emoji} تنبيه سريع!
 {symbol} (4H): {direction} قوي
@@ -937,8 +977,8 @@ def handle_command(command):
 مدعوم بـ Qwen AI + Gemini AI
 
 📊 الأصول المدعومة (45+ أصل):
-💰 كريبتو: BTC, ETH, XRP, SOL, BNB...
-🥇 معادن: الذهب (GC=F), الفضة (SI=F)
+ كريبتو: BTC, ETH, XRP, SOL, BNB...
+ معادن: الذهب (GC=F), الفضة (SI=F)
 🛢️ طاقة: النفط (CL=F)
 💱 فوركس: يورو (EURUSD=X), استرليني (GBPUSD=X), ين (USDJPY=X)
 🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F), فول الصويا (ZS=F), البن (KC=F), السكر (SB=F), القطن (CT=F)
@@ -959,7 +999,7 @@ def handle_command(command):
 /smart ^GSPC 1d (S&P 500)
 /help
 
-🌐 Dashboard: {dashboard_url}/dashboard""")
+ Dashboard: {dashboard_url}/dashboard""")
     elif cmd == '/stats':
         if get_performance:
             stats = get_performance()
@@ -992,7 +1032,7 @@ def handle_command(command):
 
 def listen():
     last_id = 0
-    logger.info("🤖 البوت يبدأ...")
+    logger.info(" البوت يبدأ...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
