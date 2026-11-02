@@ -88,11 +88,11 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone):
     if smc_zone == 'LOWER_DISCOUNT': score += 2
     elif smc_zone == 'UPPER_PREMIUM': score -= 2
     
-    if score >= 4: return 'شراء قوي 🟢', score, 'عالية'
-    elif score >= 1: return 'شراء حذر 🟡', score, 'متوسطة'
-    elif score <= -4: return 'بيع قوي 🔴', score, 'عالية'
-    elif score <= -1: return 'بيع حذر 🟠', score, 'متوسطة'
-    else: return 'انتظار ⚪', score, 'منخفضة'
+    if score >= 4: return 'شراء قوي', score, 'عالية'
+    elif score >= 1: return 'شراء حذر', score, 'متوسطة'
+    elif score <= -4: return 'بيع قوي', score, 'عالية'
+    elif score <= -1: return 'بيع حذر', score, 'متوسطة'
+    else: return 'انتظار', score, 'منخفضة'
 
 def unified_analysis(symbol, interval="4h"):
     try:
@@ -136,6 +136,10 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
+def escape_html(text):
+    """تهريب أحرف HTML الخاصة"""
+    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -164,25 +168,25 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        # إرسال التقرير المختصر
+        # إرسال التقرير المختصر (بدون Markdown لتجنب الأخطاء)
         emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
-        msg = f"""{emoji} **{data['symbol']} ({data['interval'].upper()})**
-💰 **السعر:** `${data['price']:,.2f}`
-🎯 **التوصية:** {data['action']} (Score: {data['score']})
-⚖️ **العائد/المخاطرة:** 1:{data['rr']:.2f}
+        msg = f"""{emoji} {data['symbol']} ({data['interval'].upper()})
+💰 السعر: {data['price']:,.2f}
+🎯 التوصية: {data['action']} (Score: {data['score']})
+⚖️ العائد/المخاطرة: 1:{data['rr']:.2f}
 
-📌 **مستويات التداول:**
-🛑 SL: `${data['sl']:,.2f}`
-🎯 TP1: `${data['tp1']:,.2f}` | TP2: `${data['tp2']:,.2f}`
+📌 مستويات التداول:
+🛑 SL: {data['sl']:,.2f}
+🎯 TP1: {data['tp1']:,.2f} | TP2: {data['tp2']:,.2f}
 
-🧠 **السبب:** RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}
+🧠 السبب: RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}
 
 🔗 للتفاصيل: {dashboard_url}/dashboard
-⚠️ _هذه ليست نصيحة مالية._"""
+⚠️ هذه ليست نصيحة مالية."""
         
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        await update.message.reply_text(msg)
         
         # تسجيل في Trade Logger
         if log_trade:
@@ -195,7 +199,7 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
-    await update.message.reply_text(f"""🌍 **بوت التداول الكمي المتقدم**
+    msg = f"""🌍 بوت التداول الكمي المتقدم
 معادلات تفاضلية + Stochastic Calculus + Smart Money
 
 الأوامر:
@@ -203,12 +207,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /stats
 /dashboard
 
-🔗 {dashboard_url}/dashboard""", parse_mode='Markdown')
+🔗 {dashboard_url}/dashboard"""
+    await update.message.reply_text(msg)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if get_performance:
         stats = get_performance()
-        await update.message.reply_text(f"📊 الإجمالي: {stats.get('total', 0)}\n✅ الرابحة: {stats.get('wins', 0)}\n❌ الخاسرة: {stats.get('losses', 0)}\n📈 النجاح: {stats.get('win_rate', 0)}%")
+        msg = f"""📊 الإجمالي: {stats.get('total', 0)}
+✅ الرابحة: {stats.get('wins', 0)}
+❌ الخاسرة: {stats.get('losses', 0)}
+📈 النجاح: {stats.get('win_rate', 0)}%"""
+        await update.message.reply_text(msg)
     else:
         await update.message.reply_text("⚠️ إحصائيات غير متاحة")
 
