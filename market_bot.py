@@ -4,7 +4,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import logging
 import os
-from flask import Flask
+from flask import Flask, request, jsonify
 import threading
 import numpy as np
 import re
@@ -59,6 +59,21 @@ except ImportError:
 def home(): return "Bot running!"
 @app.route('/health')
 def health(): return {"status": "ok"}
+
+# ✅ Webhook endpoint - يستقبل الرسائل من Telegram مباشرة
+@app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
+def webhook():
+    try:
+        update = request.json
+        if 'message' in update and 'text' in update['message']:
+            incoming_chat_id = str(update['message']['chat']['id']).strip()
+            if incoming_chat_id == str(CHAT_ID).strip():
+                logger.info(f"📩 Webhook received: {update['message']['text']}")
+                threading.Thread(target=handle_command, args=(update['message']['text'],)).start()
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"status": "error"}), 500
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -379,46 +394,30 @@ def handle_command(command):
 /dashboard
 /help""")
 
-# ✅ دالة listen المُصححة - تحل مشكلة التكرار
-def listen():
-    last_id = 0
-    logger.info("🤖 Bot started...")
+# ✅ إعداد Webhook عند بدء البوت
+def setup_webhook():
+    dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
+    webhook_url = f"{dashboard_url}/webhook/{TELEGRAM_TOKEN}"
     
-    # ✅ احصل على آخر update_id لتجنب تكرار الرسائل القديمة
     try:
-        resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", timeout=10)
+        # حذف webhook القديم إن وجد
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=10)
+        time.sleep(1)
+        
+        # إعداد webhook جديد
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            json={"url": webhook_url, "allowed_updates": ["message"]},
+            timeout=10
+        )
         if resp.status_code == 200 and resp.json().get('ok'):
-            updates = resp.json()['result']
-            if updates:
-                last_id = updates[-1]['update_id']
-                logger.info(f"✅ Starting from update_id: {last_id}")
+            logger.info(f"✅ Webhook set successfully: {webhook_url}")
+        else:
+            logger.error(f"❌ Failed to set webhook: {resp.text}")
     except Exception as e:
-        logger.error(f"Error getting last update: {e}")
-    
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-            params = {"offset": last_id + 1, "timeout": 10}
-            resp = requests.get(url, params=params, timeout=15)
-            
-            if resp.status_code == 200 and resp.json().get('ok'):
-                updates = resp.json()['result']
-                
-                for update in updates:
-                    if 'message' in update and 'text' in update['message']:
-                        incoming_chat_id = str(update['message']['chat']['id']).strip()
-                        if incoming_chat_id == str(CHAT_ID).strip():
-                            logger.info(f"📩 Processing: {update['message']['text']}")
-                            handle_command(update['message']['text'])
-                    
-                    # ✅ تحديث last_id بعد كل update
-                    last_id = update['update_id']
-                    
-        except Exception as e:
-            logger.error(f"Listen error: {e}")
-            time.sleep(2)
+        logger.error(f"❌ Webhook setup error: {e}")
 
 if __name__ == "__main__":
-    logger.info("🧮 Starting QUANT Trading Bot - Condensed Edition...")
-    threading.Thread(target=run_flask, daemon=True).start()
-    listen()
+    logger.info("🧮 Starting QUANT Trading Bot with Webhook...")
+    setup_webhook()
+    run_flask()
