@@ -1,7 +1,6 @@
-flask
-yfinance
-requests
-numpy
-Pillow>=10.0.0
 python-telegram-bot==20.7
+yfinance>=0.2.18
+numpy>=1.24.0
 scipy>=1.10.0
+flask>=2.3.0
+requests>=2.31.0
