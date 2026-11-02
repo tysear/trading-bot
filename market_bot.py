@@ -58,28 +58,14 @@ URGENT_KEYWORDS = [
 
 # ✅ قائمة شاملة لجميع الأصول العالمية
 ALL_SYMBOLS = [
-    # 💰 العملات الرقمية (20)
     'BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD',
     'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
     'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD',
     'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD',
-    
-    # 🥇 المعادن الثمينة (2)
-    'GC=F', 'SI=F',
-    
-    # 🛢️ الطاقة (1)
-    'CL=F',
-    
-    # 💱 العملات الرئيسية (3)
+    'GC=F', 'SI=F', 'CL=F',
     'EURUSD=X', 'GBPUSD=X', 'USDJPY=X',
-    
-    # 🌾 السلع الزراعية (6)
     'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F',
-    
-    # 📈 مؤشرات الأسهم (5)
     '^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX',
-    
-    # 🏢 الأسهم الكبرى (8)
     'AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX',
 ]
 
@@ -91,7 +77,6 @@ STOCKS = ['AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX']
 
 app = Flask(__name__)
 
-# ✅ تسجيل Dashboard
 try:
     from dashboard import dashboard_bp
     app.register_blueprint(dashboard_bp)
@@ -190,10 +175,8 @@ def monitor_urgent_news():
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
 
-# ✅ دالة fetch_data المحدثة لدعم جميع الفريمات
 def fetch_data(symbol, interval="1h"):
     try:
-        # ✅ تحديد الفترة المناسبة حسب الفريم الزمني
         if interval in ['1m', '2m', '5m']:
             period = "7d"
         elif interval in ['15m', '30m']:
@@ -223,7 +206,6 @@ def fetch_data(symbol, interval="1h"):
         lows = hist['Low'].tolist()
         volumes = hist['Volume'].tolist()
         
-        # تنظيف البيانات من القيم الفارغة
         cleaned = [
             {'close': c, 'high': h, 'low': l, 'volume': v}
             for c, h, l, v in zip(closes, highs, lows, volumes)
@@ -231,7 +213,7 @@ def fetch_data(symbol, interval="1h"):
         ]
         
         if len(cleaned) < 50:
-            logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}: {len(cleaned)} شمعة (المطلوب 50)")
+            logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}: {len(cleaned)} شمعة")
             return None
         
         return {
@@ -264,7 +246,6 @@ def fetch_order_book(symbol):
                 sups = [{'price': float(b[0]), 'volume': float(b[1])} for b in bids if float(b[1]) > tbv * 0.15][:3]
                 ress = [{'price': float(a[0]), 'volume': float(a[1])} for a in asks if float(a[1]) > tav * 0.15][:3]
                 
-                # ✅ كشف الحيتان
                 whale_detected = False
                 whale_info = ""
                 for bid in bids[:5]:
@@ -882,19 +863,13 @@ R:R = 1:{data['rr']:.2f}
 📊 Dashboard: {dashboard_url}/dashboard"""
     send_long_report(part7)
 
-# ✅ الفحص الخفيف (Light Scan)
 def auto_market_scan():
-    """فحص خفيف كل 60 دقيقة للرموز الرئيسية فقط"""
     logger.info("📡 بدء المراقبة الخفيفة (كل 60 دقيقة)...")
-    watchlist = [
-        'BTC-USD', 'ETH-USD', 'XRP-USD',
-        'GC=F', 'EURUSD=X',
-        '^GSPC',
-    ]
+    watchlist = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'GC=F', 'EURUSD=X', '^GSPC']
     
     while True:
         try:
-            time.sleep(3600)  # 60 دقيقة
+            time.sleep(3600)
             logger.info("🔄 بدء الفحص الخفيف...")
             
             for symbol in watchlist:
@@ -954,7 +929,6 @@ def smart_analysis(symbol, interval="1h"):
     send_signal_image(data)
     send_unified_report(data, qwen_ai, gemini_ai)
     
-    # ✅ تسجيل التوصية
     if log_trade:
         rec = data.get('recommendation', {})
         log_trade(
@@ -969,96 +943,119 @@ def smart_analysis(symbol, interval="1h"):
         )
         logger.info(f"✅ تم تسجيل التوصية: {symbol}")
 
-# ✅ أمر /multi الجديد - التحليل متعدد الفريمات
+# ✅ أمر /multi المحسّن - تقرير كامل مع AI و SMC والأهداف
 def multi_timeframe_analysis(symbol):
-    """تحليل شامل على جميع الفريمات مع كشف التعارض"""
+    """تحليل شامل على الفريم الرئيسي (4H) + مقارنة مع 1D و 1W"""
     send_message(f"🔍 جاري تحليل {symbol} على جميع الفريمات...")
     
-    timeframes = ['4h', '1d', '1w']
-    results = {}
+    # 1️⃣ تحليل الفريم الرئيسي (4H) بشكل كامل
+    send_message("⏳ جاري تحليل الفريم الرئيسي (4H)...")
+    main_data = unified_analysis(symbol, "4h")
     
-    for tf in timeframes:
-        send_message(f"⏳ جاري تحليل فريم {tf.upper()}...")
-        data = unified_analysis(symbol, tf)
+    if not main_data:
+        send_message(f"❌ فشل تحليل {symbol} على فريم 4H.")
+        return
+    
+    # 2️⃣ تحليل الفريمات الأخرى (ملخص فقط)
+    send_message("⏳ جاري تحليل فريم 1D...")
+    daily_data = unified_analysis(symbol, "1d")
+    
+    send_message("⏳ جاري تحليل فريم 1W...")
+    weekly_data = unified_analysis(symbol, "1w")
+    
+    # 3️⃣ تحليل الذكاء الاصطناعي للفريم الرئيسي
+    qwen_ai = None
+    if OPENROUTER_API_KEY:
+        send_message("🤖 جاري التحليل بواسطة Qwen AI...")
+        qwen_ai = ask_qwen(main_data)
+    
+    # 4️⃣ إرسال صورة الإشارة
+    send_signal_image(main_data)
+    
+    # 5️⃣ إرسال التقرير الكامل للفريم الرئيسي
+    send_unified_report(main_data, qwen_ai, None)
+    
+    # 6️⃣ إرسال مقارنة الفريمات
+    send_message(f"\n{'='*45}\n📊 مقارنة الفريمات لـ {symbol}\n{'='*45}")
+    
+    comparison = ""
+    for tf, data in [("4H (الرئيسي)", main_data), ("1D (يومي)", daily_data), ("1W (أسبوعي)", weekly_data)]:
         if data:
             rec = data.get('recommendation', {})
-            results[tf] = {
-                'score': rec.get('score', 0),
-                'action': rec.get('action', 'انتظار'),
-                'trade_type': rec.get('trade_type', 'WAIT'),
-                'confidence': rec.get('confidence', ''),
-                'price': data.get('price', 0),
-                'rsi': data.get('rsi', 0),
-                'vgs': data.get('vgs', {}).get('vgs', 0),
-                'vgs_dir': data.get('vgs', {}).get('direction', 'محايد')
-            }
+            score = rec.get('score', 0)
+            action = rec.get('action', 'انتظار')
+            rsi = data.get('rsi', 0)
+            vgs = data.get('vgs', {}).get('vgs', 0)
+            vgs_dir = data.get('vgs', {}).get('direction', 'محايد')
+            
+            if rec.get('trade_type') == 'LONG': emoji = '🟢'
+            elif rec.get('trade_type') == 'SHORT': emoji = '🔴'
+            else: emoji = '⚪'
+            
+            comparison += f"{emoji} {tf}: {action}\n"
+            comparison += f"   Score: {score} | RSI: {rsi:.1f} | VGS: {vgs:.3f} ({vgs_dir})\n\n"
         else:
-            results[tf] = None
+            comparison += f"⚠️ {tf}: بيانات غير متاحة\n\n"
     
-    # بناء رسالة المقارنة
-    msg = f"""📊 التحليل متعدد الفريمات لـ {symbol}
-{'='*45}
-"""
+    send_message(comparison)
     
-    for tf, res in results.items():
-        if res:
-            if res['trade_type'] == 'LONG':
-                emoji = '🟢'
-            elif res['trade_type'] == 'SHORT':
-                emoji = '🔴'
-            else:
-                emoji = '⚪'
-            msg += f"{emoji} {tf.upper()}: {res['action']}\n"
-            msg += f"   Score: {res['score']} | RSI: {res['rsi']:.1f} | VGS: {res['vgs']:.3f} ({res['vgs_dir']})\n\n"
-        else:
-            msg += f"⚠️ {tf.upper()}: بيانات غير متاحة\n\n"
+    # 7️⃣ كشف التعارض والتوصية النهائية
+    scores = []
+    if main_data: scores.append(main_data['recommendation'].get('score', 0))
+    if daily_data: scores.append(daily_data['recommendation'].get('score', 0))
+    if weekly_data: scores.append(weekly_data['recommendation'].get('score', 0))
     
-    # كشف التعارض
-    scores = [r['score'] for r in results.values() if r]
     if len(scores) >= 2:
         positive = sum(1 for s in scores if s > 1)
         negative = sum(1 for s in scores if s < -1)
-        neutral = len(scores) - positive - negative
         
-        msg += f"{'='*45}\n"
-        msg += f"📈 إشارات صعودية: {positive}\n"
-        msg += f"📉 إشارات هبوطية: {negative}\n"
-        msg += f"⚖️ محايدة: {neutral}\n\n"
+        final_msg = f"{'='*45}\n🎯 التحليل النهائي:\n"
+        final_msg += f"📈 إشارات صعودية: {positive}\n"
+        final_msg += f"📉 إشارات هبوطية: {negative}\n\n"
         
         if positive > 0 and negative > 0:
-            msg += f"⚠️ **تعارض مكتشف!**\n\n"
-            
+            final_msg += "⚠️ **تعارض بين الفريمات!**\n\n"
             if positive > negative:
-                msg += "📈 **الاتجاه العام: صاعد**\n"
-                msg += "💡 انتظر حتى يتوافق 4H مع 1D للشراء\n"
-                msg += "🎯 ابحث عن: RSI < 35 + VGS صعودي على 4H\n"
+                final_msg += "📈 الاتجاه العام: صاعد\n"
+                final_msg += "💡 انتظر حتى يتوافق 4H مع 1D\n"
+                final_msg += "🎯 ابحث عن: RSI < 40 + VGS صعودي على 4H\n"
             elif negative > positive:
-                msg += "📉 **الاتجاه العام: هابط**\n"
-                msg += "💡 انتظر حتى يتوافق 4H مع 1D للبيع\n"
-                msg += "🎯 ابحث عن: RSI > 70 + VGS هبوطي على 4H\n"
+                final_msg += "📉 الاتجاه العام: هابط\n"
+                final_msg += "💡 انتظر حتى يتوافق 4H مع 1D\n"
+                final_msg += "🎯 ابحث عن: RSI > 60 + VGS هبوطي على 4H\n"
             else:
-                msg += "⚖️ **السوق متوازن - لا توصية واضحة**\n"
-                msg += "💡 انتظر كسر واضح في أحد الاتجاهين\n"
+                final_msg += "⚖️ السوق متوازن - انتظر\n"
             
-            msg += f"\n🚫 **التوصية: انتظر** حتى تتوافق الفريمات"
+            final_msg += "\n🚫 **التوصية: انتظر** حتى تتوافق الفريمات"
+        elif positive > 0:
+            final_msg += "✅ **اتجاه موحد: صعودي 🟢**\n"
+            final_msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
+            final_msg += "🎯 ابحث عن نقطة دخول على 4H"
+        elif negative > 0:
+            final_msg += "✅ **اتجاه موحد: هبوطي 🔴**\n"
+            final_msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
+            final_msg += "🎯 ابحث عن نقطة دخول على 4H"
         else:
-            if positive > 0:
-                direction = "صعودي 🟢"
-                msg += f"✅ **اتجاه موحد: {direction}**\n"
-                msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
-                msg += "🎯 ابحث عن نقطة دخول على 4H"
-            elif negative > 0:
-                direction = "هبوطي 🔴"
-                msg += f"✅ **اتجاه موحد: {direction}**\n"
-                msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
-                msg += "🎯 ابحث عن نقطة دخول على 4H"
-            else:
-                msg += "⚖️ **السوق في حالة انتظار**\n"
-                msg += "💡 لا توجد إشارات قوية حالياً"
+            final_msg += "⚖️ **السوق في حالة انتظار**\n"
+            final_msg += "💡 لا توجد إشارات قوية حالياً"
+        
+        final_msg += f"\n\n⚠️ ليست نصيحة مالية"
+        send_message(final_msg)
     
-    msg += f"\n\n⚠️ ليست نصيحة مالية"
-    
-    send_message(msg)
+    # 8️⃣ تسجيل التوصية
+    if log_trade:
+        rec = main_data.get('recommendation', {})
+        log_trade(
+            symbol=main_data['symbol'],
+            action=rec.get('action', ''),
+            price=main_data['price'],
+            score=rec.get('score', 0),
+            tp1=main_data.get('tp1', 0),
+            tp2=main_data.get('tp2', 0),
+            tp3=main_data.get('tp3', 0),
+            sl=main_data.get('sl', 0)
+        )
+        logger.info(f"✅ تم تسجيل التوصية: {symbol}")
 
 def handle_command(command):
     cmd = command.strip().lower()
@@ -1073,23 +1070,21 @@ def handle_command(command):
 🥇 معادن: الذهب (GC=F), الفضة (SI=F)
 🛢️ طاقة: النفط (CL=F)
 💱 فوركس: يورو (EURUSD=X), استرليني (GBPUSD=X), ين (USDJPY=X)
-🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F), فول الصويا (ZS=F), البن (KC=F), السكر (SB=F), القطن (CT=F)
-📈 مؤشرات: S&P500 (^GSPC), NASDAQ (^IXIC), Dow (^DJI), Russell (^RUT), VIX (^VIX)
-🏢 أسهم كبرى: Apple (AAPL), Tesla (TSLA), Microsoft (MSFT), Amazon (AMZN), NVIDIA (NVDA), Google (GOOGL), Meta (META), Netflix (NFLX)
+🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F)
+📈 مؤشرات: S&P500 (^GSPC), NASDAQ (^IXIC), Dow (^DJI)
+🏢 أسهم كبرى: Apple (AAPL), Tesla (TSLA), NVIDIA (NVDA)...
 
 📱 الأوامر:
-/smart <رمز> [تايم_فريم] - تحليل فريم واحد
-/multi <رمز> - تحليل جميع الفريمات + كشف التعارض
+/smart <رمز> [تايم_فريم] - تحليل فريم واحد كامل
+/multi <رمز> - تقرير كامل + مقارنة جميع الفريمات + AI
 /stats - إحصائيات البوت
 /dashboard - لوحة التحكم
 
 أمثلة:
 /smart BTC-USD 4h
 /multi BTC-USD
-/smart GC=F 4h (الذهب)
-/smart EURUSD=X 4h (يورو/دولار)
-/smart AAPL 1d (Apple)
-/smart ^GSPC 1d (S&P 500)
+/smart GC=F 4h
+/smart AAPL 1d
 /help
 
 🌐 Dashboard: {dashboard_url}/dashboard""")
@@ -1130,7 +1125,7 @@ def handle_command(command):
     elif cmd == '/help':
         send_message("""الأوامر:
 /smart <رمز> [15m, 1h, 4h, 1d] - تحليل فريم واحد
-/multi <رمز> - تحليل جميع الفريمات + كشف التعارض
+/multi <رمز> - تقرير كامل + مقارنة الفريمات + AI
 /stats - إحصائيات البوت
 /dashboard - لوحة التحكم
 /help - هذه الرسالة""")
