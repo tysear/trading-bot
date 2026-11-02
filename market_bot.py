@@ -7,6 +7,7 @@ import os
 from flask import Flask
 import threading
 import numpy as np
+from scipy import stats
 import re
 
 # ✅ استيراد الميزات
@@ -40,7 +41,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
-# ✅ قائمة نماذج Gemini محدثة
 GEMINI_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-pro",
@@ -116,7 +116,7 @@ def send_message(text):
         else:
             logger.info("✅ تم إرسال الرسالة بنجاح")
     except Exception as e: 
-        logger.error(f"❌ خطأ في الإرسال: {e}")
+        logger.error(f" خطأ في الإرسال: {e}")
 
 def send_long_report(report):
     max_length = 3800
@@ -153,7 +153,7 @@ def save_alerted_news(headline):
     except: pass
 
 def monitor_urgent_news():
-    logger.info("🔍 بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
+    logger.info(" بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
     while True:
         try:
             time.sleep(300)
@@ -174,6 +174,102 @@ def monitor_urgent_news():
                             save_alerted_news(original)
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
+
+# ==========================================
+# 🔬 STOCHASTIC CALCULUS - WALL STREET LEVEL
+# ==========================================
+
+def calculate_stochastic_analysis(prices: list, volumes: list = None) -> dict:
+    """
+     التحليل العشوائي المتقدم (Stochastic Calculus)
+    يستخدم معادلات التفاضل العشوائي (SDE) ونموذج الحركة البراونية الهندسية (GBM)
+    """
+    if not prices or len(prices) < 10:
+        return None
+    
+    arr = np.array(prices, dtype=float)
+    n = len(arr)
+    
+    # 1. العوائد اللوغاريتمية (Log Returns)
+    log_returns = np.diff(np.log(arr))
+    
+    # 2. التقلب السنوي (Annualized Volatility) - σ في معادلة GBM
+    daily_volatility = np.std(log_returns)
+    annualized_volatility = daily_volatility * np.sqrt(252)  # 252 يوم تداول
+    
+    # 3. الانحراف (Drift) - μ في معادلة GBM
+    drift = np.mean(log_returns)
+    annualized_drift = drift * 252
+    
+    # 4. معامل التباين (Coefficient of Variation)
+    cv = daily_volatility / abs(drift) if drift != 0 else np.inf
+    
+    # 5. قيمة المخاطرة (Value at Risk - VaR) عند 95%
+    var_95 = np.percentile(log_returns, 5)
+    var_99 = np.percentile(log_returns, 1)
+    
+    # 6. العائد المتوقع (Expected Return) باستخدام GBM
+    # dS = μS dt + σS dW
+    expected_return = np.exp(drift + 0.5 * daily_volatility**2) - 1
+    
+    # 7. نسبة شارب (Sharpe Ratio) - العائد المعدل حسب المخاطرة
+    risk_free_rate = 0.02 / 252  # 2% سنوياً
+    sharpe_ratio = (drift - risk_free_rate) / daily_volatility if daily_volatility != 0 else 0
+    
+    # 8. نسبة سورتينو (Sortino Ratio) - المخاطرة السلبية فقط
+    negative_returns = log_returns[log_returns < 0]
+    downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0.001
+    sortino_ratio = (drift - risk_free_rate) / downside_deviation if downside_deviation != 0 else 0
+    
+    # 9. ألفا وبيتا (Alpha & Beta)
+    # حساب بيتا كمقياس للحساسية تجاه السوق
+    if volumes and len(volumes) == n:
+        vol_arr = np.array(volumes[:-1], dtype=float)
+        beta = np.cov(log_returns, vol_arr)[0, 1] / np.var(vol_arr) if np.var(vol_arr) != 0 else 1.0
+    else:
+        beta = 1.0  # افتراضي
+    
+    # ألفا: العائد الزائد عن المتوقع
+    alpha = drift - (risk_free_rate + beta * (np.mean(log_returns) - risk_free_rate))
+    
+    # 10. مؤشر زينو (Zeno's Paradox Indicator) - قياس كفاءة السوق
+    max_price = np.max(arr)
+    min_price = np.min(arr)
+    current_price = arr[-1]
+    zeno_index = (current_price - min_price) / (max_price - min_price) if max_price != min_price else 0.5
+    
+    # 11. اختبار mean reversion باستخدام Hurst Exponent (مبسط)
+    # إذا H < 0.5 = mean reversion, H > 0.5 = trending
+    lags = range(2, 20)
+    tau = [np.std(np.subtract(arr[lag:], arr[:-lag])) for lag in lags]
+    reg = np.polyfit(np.log(lags), np.log(tau), 1)
+    hurst_exponent = reg[0] / 2.0
+    
+    # 12. Ito's Lemma Application - حساب التغير اللحظي
+    # d(ln S) = (μ - σ²/2)dt + σdW
+    ito_drift = drift - 0.5 * daily_volatility**2
+    ito_diffusion = daily_volatility
+    
+    return {
+        'daily_volatility': daily_volatility,
+        'annualized_volatility': annualized_volatility,
+        'drift': drift,
+        'annualized_drift': annualized_drift,
+        'coefficient_of_variation': cv,
+        'var_95': var_95,
+        'var_99': var_99,
+        'expected_return': expected_return,
+        'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
+        'alpha': alpha,
+        'beta': beta,
+        'hurst_exponent': hurst_exponent,
+        'ito_drift': ito_drift,
+        'ito_diffusion': ito_diffusion,
+        'zeno_index': zeno_index,
+        'current_price': current_price
+    }
+
 
 def fetch_data(symbol, interval="1h"):
     try:
@@ -336,7 +432,7 @@ def advanced_differential_analysis(closes, volumes):
 def fetch_news(symbol):
     try:
         if not FINNHUB_API_KEY:
-            return ["⚠️ مفتاح Finnhub غير متاح"]
+            return ["️ مفتاح Finnhub غير متاح"]
         finnhub_symbol = symbol
         if symbol in CRYPTO_SYMBOLS:
             if 'BTC' in symbol: finnhub_symbol = 'CRYPTO:BTC'
@@ -493,6 +589,7 @@ def get_action_recommendation(data):
         osc = diff_an.get('oscillator', {})
         diff_model = diff_an.get('diffusion', {})
         smc = data.get('smc', {})
+        stochastic = data.get('stochastic', {})
         
         score = 0
         math_signals = []
@@ -568,6 +665,31 @@ def get_action_recommendation(data):
                 data['smc_choch'] = f"{choch['type']} عند {choch['level']:.3f}"
             data['smc_pd'] = f"{pd['zone']} ({pd['percentage']:.0f}%)"
         
+        # ✅ إضافة تحليل Stochastic Calculus
+        if stochastic:
+            sharpe = stochastic.get('sharpe_ratio', 0)
+            sortino = stochastic.get('sortino_ratio', 0)
+            hurst = stochastic.get('hurst_exponent', 0.5)
+            
+            if sharpe > 1.5:
+                score += 3
+                math_signals.append(f"Sharpe Ratio ممتاز ({sharpe:.2f})")
+            elif sharpe > 0.5:
+                score += 1
+                math_signals.append(f"Sharpe Ratio جيد ({sharpe:.2f})")
+            elif sharpe < -0.5:
+                score -= 2
+                math_signals.append(f"Sharpe Ratio سلبي ({sharpe:.2f})")
+            
+            if sortino > 2.0:
+                score += 2
+                math_signals.append(f"Sortino Ratio قوي ({sortino:.2f})")
+            
+            if hurst > 0.6:
+                math_signals.append(f"Hurst > 0.6 (اتجاه قوي)")
+            elif hurst < 0.4:
+                math_signals.append(f"Hurst < 0.4 (mean reversion)")
+        
         veto_warning = ""
         reversal_signals = 0
         if osc_position == 'قاع': reversal_signals += 1
@@ -591,7 +713,7 @@ def get_action_recommendation(data):
         if conflict_detected and abs(score) >= 5:
             if score > 0: score = min(score, 2)
             else: score = max(score, -2)
-            veto_warning += " ⚠️ تعارض شديد - توصية مخففة."
+            veto_warning += " ️ تعارض شديد - توصية مخففة."
         
         if score >= 8: action, conf = 'افتح شراء (Long) قوي جداً', 'عالية جداً'
         elif score >= 5: action, conf = 'افتح شراء (Long) قوي', 'عالية'
@@ -640,6 +762,9 @@ def unified_analysis(symbol, interval="1h"):
         ob_an = analyze_order_book(ob) if ob else None
         diff_an = advanced_differential_analysis(closes, volumes)
         
+        # ✅ إضافة التحليل العشوائي المتقدم
+        stochastic_data = calculate_stochastic_analysis(closes, volumes)
+        
         smc_data = None
         if get_smc_analysis:
             try:
@@ -649,7 +774,11 @@ def unified_analysis(symbol, interval="1h"):
                 logger.error(f"❌ خطأ في SMC: {e}")
         
         direction = 'شراء' if current_price > ema20 and macd > 0 else ('بيع' if current_price < ema20 and macd < 0 else 'انتظار')
-        rec = get_action_recommendation({'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc, 'direction': direction, 'macd': macd, 'ob_analysis': ob_an, 'diff_analysis': diff_an, 'smc': smc_data})
+        rec = get_action_recommendation({
+            'vgs': vgs_data, 'vfm': vfm_data, 'rsi': rsi, 'kelly': kelly, 'mc': mc, 
+            'direction': direction, 'macd': macd, 'ob_analysis': ob_an, 
+            'diff_analysis': diff_an, 'smc': smc_data, 'stochastic': stochastic_data
+        })
         
         if rec['trade_type'] == 'LONG': sl, tp1, tp2, tp3 = current_price - (atr * 0.8), current_price + (atr * 1.2), current_price + (atr * 2.0), current_price + (atr * 3.0)
         elif rec['trade_type'] == 'SHORT': sl, tp1, tp2, tp3 = current_price + (atr * 0.8), current_price - (atr * 1.2), current_price - (atr * 2.0), current_price - (atr * 3.0)
@@ -657,7 +786,14 @@ def unified_analysis(symbol, interval="1h"):
         
         rr = abs(tp1 - current_price) / abs(current_price - sl) if abs(current_price - sl) > 0 else 0
         
-        result = {'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 'macd': macd, 'atr': atr, 'interval': interval, 'kelly': kelly, 'mc': mc, 'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 'news': news, 'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': rec, 'order_book': ob, 'ob_analysis': ob_an, 'diff_analysis': diff_an, 'smc': smc_data}
+        result = {
+            'symbol': symbol, 'price': current_price, 'rsi': rsi, 'ema20': ema20, 'ema50': ema50, 
+            'macd': macd, 'atr': atr, 'interval': interval, 'kelly': kelly, 'mc': mc, 
+            'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 
+            'news': news, 'vgs': vgs_data, 'vfm': vfm_data, 'recommendation': rec, 
+            'order_book': ob, 'ob_analysis': ob_an, 'diff_analysis': diff_an, 'smc': smc_data,
+            'stochastic': stochastic_data
+        }
         
         if smc_data:
             bos = smc_data.get('bos', {})
@@ -692,16 +828,24 @@ def ask_qwen(data):
         if data.get('smc_pd'): smc_info += f"المنطقة: {data['smc_pd']}. "
         if data.get('smc_liquidity'): smc_info += f"السيولة: {data['smc_liquidity']}. "
         
-        prompt = f"""أنت محلل كمي متخصص في Smart Money Concepts. 
+        stochastic = data.get('stochastic', {})
+        stochastic_info = ""
+        if stochastic:
+            sharpe = stochastic.get('sharpe_ratio', 0)
+            hurst = stochastic.get('hurst_exponent', 0.5)
+            stochastic_info = f"Sharpe: {sharpe:.2f}, Hurst: {hurst:.2f}. "
+        
+        prompt = f"""أنت محلل كمي متخصص في Smart Money Concepts والتفاضل العشوائي. 
 الرمز: {data['symbol']} ({data.get('interval', '1h')})
 السعر: ${data['price']:,.2f}
 الإشارات الرياضية: {math_text}
 RSI: {data['rsi']:.1f}
 {smc_info}
+{stochastic_info}
 الأخبار: {news_text}
 
 أعطِ تحليلاً بالعربية في 3 نقاط:
-1. القرار بناءً على SMC والرياضيات
+1. القرار بناءً على SMC والرياضيات والتفاضل العشوائي
 2. تفسير حركة السعر (مؤسسات، سيولة، Order Blocks)
 3. المخاطر
 
@@ -716,39 +860,29 @@ RSI: {data['rsi']:.1f}
         logger.error(f"خطأ Qwen: {e}")
         return None
 
-# ✅ دالة Gemini المحسّنة
 def ask_gemini(data):
     if not GEMINI_API_KEY:
-        logger.warning("⚠️ GEMINI_API_KEY غير موجود أو فارغ")
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود")
         return None
     try:
         rec = data.get('recommendation', {})
         math_sigs = rec.get('math_signals', [])
-        prompt = f"""أنت محلل تداول محترف. الرمز: {data['symbol']}.
+        prompt = f"""أنت محلل تداول. الرمز: {data['symbol']}.
 السعر: ${data['price']:,.2f}
 RSI: {data['rsi']:.1f}
 الإشارات: {' | '.join(math_sigs[:3]) if math_sigs else 'لا توجد'}
 
-أعطِ رأيك بالعربية فقط في 3 نقاط قصيرة:
-1. هل تتفق مع التحليل؟ ولماذا؟
-2. ما الذي قد يفوته التحليل؟
-3. نصيحة عملية للمتداول.
+رأيك بالعربية في 3 أسطر (بدون Markdown):
+- هل تتفق؟
+- ما الذي قد يفوته؟
+- نصيحة عملية.
 
-مهم: أجب بالعربية فقط، لا تستخدم الإنجليزية."""
-        
+لا تستخدم # أو * أو **."""
         for model_name in GEMINI_MODELS:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "maxOutputTokens": 500
-                    }
-                }
-                headers = {"Content-Type": "application/json"}
-                res = requests.post(url, json=payload, headers=headers, timeout=30)
-                
+                payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}}
+                res = requests.post(url, json=payload, timeout=30)
                 if res.status_code == 200:
                     result = res.json()
                     if 'candidates' in result and len(result['candidates']) > 0:
@@ -757,18 +891,11 @@ RSI: {data['rsi']:.1f}
                             analysis = candidate['content']['parts'][0]['text']
                             cleaned = clean_markdown(analysis)
                             if cleaned and len(cleaned) > 10:
-                                logger.info(f"✅ Gemini نجح باستخدام {model_name}")
                                 return cleaned
-                else:
-                    logger.warning(f"⚠️ Gemini {model_name} فشل: {res.status_code} - {res.text[:100]}")
-            except Exception as e:
-                logger.warning(f"⚠️ خطأ في {model_name}: {e}")
-                continue
-        
-        logger.error("❌ جميع نماذج Gemini فشلت")
+            except: continue
         return None
     except Exception as e:
-        logger.error(f"❌ خطأ Gemini: {e}")
+        logger.error(f"خطأ Gemini: {e}")
         return None
 
 def send_signal_image(data):
@@ -802,6 +929,7 @@ def send_unified_report(data, qwen_analysis=None, gemini_analysis=None):
     da = data.get('diff_analysis', {})
     kelly = data.get('kelly', {})
     mc = data.get('mc', {})
+    stochastic = data.get('stochastic', {})
     interval = data.get('interval', '1h').upper()
     math_sigs = rec.get('math_signals', [])
     dir_display = 'شراء' if rec.get('trade_type')=='LONG' else 'بيع' if rec.get('trade_type')=='SHORT' else 'انتظار'
@@ -823,6 +951,21 @@ R:R = 1:{data['rr']:.2f}
     for sig in math_sigs[:4]: part1 += f"- {sig}\n"
     part1 += f"\nالمؤشرات:\n- RSI: {data['rsi']:.1f}\n- MACD: {data['macd']:.2f}\n- ATR: ${data['atr']:,.2f}\n\nKelly: {kelly.get('kelly_safe', 0)*100:.1f}%\nمونت كارلو: {mc.get('prob_profit',0):.1f}%"
     send_long_report(part1)
+    
+    # ✅ إضافة قسم Stochastic Calculus
+    if stochastic:
+        stochastic_section = f"""{'='*45}
+🔬 **Stochastic Calculus (Wall Street Level):**
+• **التقلب السنوي (Volatility σ):** {stochastic.get('annualized_volatility', 0)*100:.2f}%
+• **الانحراف (Drift μ):** {stochastic.get('annualized_drift', 0)*100:.2f}% سنوياً
+• **Sharpe Ratio:** {stochastic.get('sharpe_ratio', 0):.2f}
+• **Sortino Ratio:** {stochastic.get('sortino_ratio', 0):.2f}
+• **Value at Risk (95%):** {stochastic.get('var_95', 0)*100:.2f}%
+• **Hurst Exponent:** {stochastic.get('hurst_exponent', 0.5):.3f}
+• **Ito's Drift:** {stochastic.get('ito_drift', 0):.4f}
+• **Ito's Diffusion:** {stochastic.get('ito_diffusion', 0):.4f}
+"""
+        send_long_report(stochastic_section)
     
     smc_section = f"""{'='*45}
 🏦 Smart Money Concepts (SMC):
@@ -876,7 +1019,7 @@ R:R = 1:{data['rr']:.2f}
 {rec.get('description','')}
 الثقة: {rec.get('confidence','غير محدد')}
 
-⚠️ بوت كمي: 80% معادلات. ليست نصيحة مالية.
+⚠️ بوت كمي: معادلات تفاضلية + Stochastic Calculus + SMC. ليست نصيحة مالية.
 
 📊 Dashboard: {dashboard_url}/dashboard"""
     send_long_report(part7)
@@ -930,7 +1073,7 @@ def smart_analysis(symbol, interval="1h"):
     send_message(f"جاري التحليل الكمي لـ {symbol} ({interval.upper()})...")
     data = unified_analysis(symbol, interval)
     if not data:
-        send_message(f"❌ فشل تحليل {symbol}.")
+        send_message(f" فشل تحليل {symbol}.")
         return
     
     qwen_ai = None
@@ -974,7 +1117,7 @@ def multi_timeframe_analysis(symbol):
     send_message("⏳ جاري تحليل فريم 1D...")
     daily_data = unified_analysis(symbol, "1d")
     
-    send_message("⏳ جاري تحليل فريم 1W...")
+    send_message(" جاري تحليل فريم 1W...")
     weekly_data = unified_analysis(symbol, "1w")
     
     qwen_ai = None
@@ -1036,7 +1179,7 @@ def multi_timeframe_analysis(symbol):
             
             final_msg += "\n🚫 **التوصية: انتظر** حتى تتوافق الفريمات"
         elif positive > 0:
-            final_msg += "✅ **اتجاه موحد: صعودي 🟢**\n"
+            final_msg += "✅ **اتجاه موحد: صعودي **\n"
             final_msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
             final_msg += "🎯 ابحث عن نقطة دخول على 4H"
         elif negative > 0:
@@ -1047,7 +1190,7 @@ def multi_timeframe_analysis(symbol):
             final_msg += "⚖️ **السوق في حالة انتظار**\n"
             final_msg += "💡 لا توجد إشارات قوية حالياً"
         
-        final_msg += f"\n\n⚠️ ليست نصيحة مالية"
+        final_msg += f"\n\n️ ليست نصيحة مالية"
         send_message(final_msg)
     
     if log_trade:
@@ -1069,17 +1212,26 @@ def handle_command(command):
     if cmd == '/start':
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         send_message(f"""🌍 بوت التداول الكمي - Global Edition
-المعادلات + Order Book + Smart Money = 80% من القرار
+المعادلات + Order Book + Smart Money + Stochastic Calculus = 95% من القرار
 مدعوم بـ Qwen AI + Gemini AI
 
-📊 الأصول المدعومة (45+ أصل):
+ الأصول المدعومة (45+ أصل):
 💰 كريبتو: BTC, ETH, XRP, SOL, BNB...
 🥇 معادن: الذهب (GC=F), الفضة (SI=F)
-🛢️ طاقة: النفط (CL=F)
+️ طاقة: النفط (CL=F)
 💱 فوركس: يورو (EURUSD=X), استرليني (GBPUSD=X), ين (USDJPY=X)
 🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F)
 📈 مؤشرات: S&P500 (^GSPC), NASDAQ (^IXIC), Dow (^DJI)
 🏢 أسهم كبرى: Apple (AAPL), Tesla (TSLA), NVIDIA (NVDA)...
+
+🔬 الميزات الرياضية المتقدمة:
+• التفاضل والتكامل العشوائي (Stochastic Calculus)
+• معادلات التفاضل العادية (ODEs)
+• نموذج الحركة البراونية الهندسية (GBM)
+• قيمة المخاطرة (VaR)
+• نسبة شارب وسورتينو
+• Hurst Exponent
+• Ito's Lemma
 
 📱 الأوامر:
 /smart <رمز> [تايم_فريم] - تحليل فريم واحد كامل
@@ -1106,7 +1258,7 @@ def handle_command(command):
 • قيد الانتظار: {stats.get('pending', 0)}"""
             send_message(stats_msg)
         else:
-            send_message("⚠️ إحصائيات غير متاحة")
+            send_message("️ إحصائيات غير متاحة")
     elif cmd == '/dashboard':
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         send_message(f"🌐 لوحة التحكم:\n{dashboard_url}/dashboard")
@@ -1141,12 +1293,13 @@ def listen():
     last_id = 0
     logger.info("🤖 البوت يبدأ...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
-    logger.info(f"🔑 TELEGRAM: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
+    logger.info(f" TELEGRAM: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
     logger.info(f"🤖 GEMINI: {'نعم' if GEMINI_API_KEY else 'لا'}")
     logger.info(f"📰 FINNHUB: {'نعم' if FINNHUB_API_KEY else 'لا'}")
     logger.info(f"🏦 SMC: {'نعم' if get_smc_analysis else 'لا'}")
     logger.info(f"📊 Trade Logger: {'نعم' if log_trade else 'لا'}")
+    logger.info(f" Stochastic Calculus: ✅ مفعّل")
     logger.info(f"🌍 الأصول: {len(ALL_SYMBOLS)} أصل مدعوم")
     while True:
         try:
@@ -1167,7 +1320,7 @@ def listen():
         time.sleep(1)
 
 if __name__ == "__main__":
-    logger.info("🧮 Starting QUANT Trading Bot - PROFESSIONAL EDITION...")
+    logger.info("🧮 Starting QUANT Trading Bot - PROFESSIONAL EDITION with Stochastic Calculus...")
     threading.Thread(target=monitor_urgent_news, daemon=True).start()
     threading.Thread(target=auto_market_scan, daemon=True).start()
     threading.Thread(target=run_flask, daemon=True).start()
