@@ -168,7 +168,7 @@ def save_alerted_news(headline):
     except: pass
 
 def monitor_urgent_news():
-    logger.info(" بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
+    logger.info("🔍 بدء مراقبة الأخبار العاجلة (كل 5 دقائق)...")
     while True:
         try:
             time.sleep(300)
@@ -185,7 +185,7 @@ def monitor_urgent_news():
                     if any(keyword in headline for keyword in URGENT_KEYWORDS):
                         original = item.get('headline', '')
                         if original not in alerted:
-                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n {item.get('url', '')}")
+                            send_message(f"🚨 تنبيه عاجل (ماكرو):\n{original}\n\n🔗 {item.get('url', '')}")
                             save_alerted_news(original)
         except Exception as e: 
             logger.error(f"❌ خطأ في مراقبة الأخبار: {e}")
@@ -600,7 +600,7 @@ def get_action_recommendation(data):
         if vgs_val > 0.4 and rsi < 35 and vfm_flux > 2.0:
             if score < -2:
                 score = 0
-                veto_warning = f" فيتو صعودي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}!"
+                veto_warning = f"🚨 فيتو صعودي: VGS={vgs_val:.3f} + RSI={rsi:.1f} + VFM={vfm_flux:.2f}!"
         
         bullish_count = sum(1 for s in math_signals if '+' in s or 'إضافة' in s or 'صعودي' in s or 'قاع' in s)
         bearish_count = sum(1 for s in math_signals if '-' in s or 'خصم' in s or 'هبوطي' in s or 'قمة' in s)
@@ -870,6 +870,7 @@ R:R = 1:{data['rr']:.2f}
     else:
         send_long_report(f"{'='*45}\n⚠️ Gemini غير متاح")
     
+    dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
     part7 = f"""{'='*45}
 التوصية النهائية:
 {rec.get('action','انتظار')}
@@ -878,7 +879,7 @@ R:R = 1:{data['rr']:.2f}
 
 ⚠️ بوت كمي: 80% معادلات. ليست نصيحة مالية.
 
-📊 Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')}/dashboard"""
+📊 Dashboard: {dashboard_url}/dashboard"""
     send_long_report(part7)
 
 # ✅ الفحص الخفيف (Light Scan)
@@ -917,7 +918,7 @@ def auto_market_scan():
                 elif rsi > 75: score -= 2
                 
                 if abs(score) >= 5:
-                    emoji = "🟢" if score > 0 else ""
+                    emoji = "🟢" if score > 0 else "🔴"
                     direction = "شراء" if score > 0 else "بيع"
                     alert_msg = f"""{emoji} تنبيه سريع!
 {symbol} (4H): {direction} قوي
@@ -968,17 +969,108 @@ def smart_analysis(symbol, interval="1h"):
         )
         logger.info(f"✅ تم تسجيل التوصية: {symbol}")
 
+# ✅ أمر /multi الجديد - التحليل متعدد الفريمات
+def multi_timeframe_analysis(symbol):
+    """تحليل شامل على جميع الفريمات مع كشف التعارض"""
+    send_message(f"🔍 جاري تحليل {symbol} على جميع الفريمات...")
+    
+    timeframes = ['4h', '1d', '1w']
+    results = {}
+    
+    for tf in timeframes:
+        send_message(f"⏳ جاري تحليل فريم {tf.upper()}...")
+        data = unified_analysis(symbol, tf)
+        if data:
+            rec = data.get('recommendation', {})
+            results[tf] = {
+                'score': rec.get('score', 0),
+                'action': rec.get('action', 'انتظار'),
+                'trade_type': rec.get('trade_type', 'WAIT'),
+                'confidence': rec.get('confidence', ''),
+                'price': data.get('price', 0),
+                'rsi': data.get('rsi', 0),
+                'vgs': data.get('vgs', {}).get('vgs', 0),
+                'vgs_dir': data.get('vgs', {}).get('direction', 'محايد')
+            }
+        else:
+            results[tf] = None
+    
+    # بناء رسالة المقارنة
+    msg = f"""📊 التحليل متعدد الفريمات لـ {symbol}
+{'='*45}
+"""
+    
+    for tf, res in results.items():
+        if res:
+            if res['trade_type'] == 'LONG':
+                emoji = '🟢'
+            elif res['trade_type'] == 'SHORT':
+                emoji = '🔴'
+            else:
+                emoji = '⚪'
+            msg += f"{emoji} {tf.upper()}: {res['action']}\n"
+            msg += f"   Score: {res['score']} | RSI: {res['rsi']:.1f} | VGS: {res['vgs']:.3f} ({res['vgs_dir']})\n\n"
+        else:
+            msg += f"⚠️ {tf.upper()}: بيانات غير متاحة\n\n"
+    
+    # كشف التعارض
+    scores = [r['score'] for r in results.values() if r]
+    if len(scores) >= 2:
+        positive = sum(1 for s in scores if s > 1)
+        negative = sum(1 for s in scores if s < -1)
+        neutral = len(scores) - positive - negative
+        
+        msg += f"{'='*45}\n"
+        msg += f"📈 إشارات صعودية: {positive}\n"
+        msg += f"📉 إشارات هبوطية: {negative}\n"
+        msg += f"⚖️ محايدة: {neutral}\n\n"
+        
+        if positive > 0 and negative > 0:
+            msg += f"⚠️ **تعارض مكتشف!**\n\n"
+            
+            if positive > negative:
+                msg += "📈 **الاتجاه العام: صاعد**\n"
+                msg += "💡 انتظر حتى يتوافق 4H مع 1D للشراء\n"
+                msg += "🎯 ابحث عن: RSI < 35 + VGS صعودي على 4H\n"
+            elif negative > positive:
+                msg += "📉 **الاتجاه العام: هابط**\n"
+                msg += "💡 انتظر حتى يتوافق 4H مع 1D للبيع\n"
+                msg += "🎯 ابحث عن: RSI > 70 + VGS هبوطي على 4H\n"
+            else:
+                msg += "⚖️ **السوق متوازن - لا توصية واضحة**\n"
+                msg += "💡 انتظر كسر واضح في أحد الاتجاهين\n"
+            
+            msg += f"\n🚫 **التوصية: انتظر** حتى تتوافق الفريمات"
+        else:
+            if positive > 0:
+                direction = "صعودي 🟢"
+                msg += f"✅ **اتجاه موحد: {direction}**\n"
+                msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
+                msg += "🎯 ابحث عن نقطة دخول على 4H"
+            elif negative > 0:
+                direction = "هبوطي 🔴"
+                msg += f"✅ **اتجاه موحد: {direction}**\n"
+                msg += "💡 **التوصية: يمكن التداول بثقة عالية**\n"
+                msg += "🎯 ابحث عن نقطة دخول على 4H"
+            else:
+                msg += "⚖️ **السوق في حالة انتظار**\n"
+                msg += "💡 لا توجد إشارات قوية حالياً"
+    
+    msg += f"\n\n⚠️ ليست نصيحة مالية"
+    
+    send_message(msg)
+
 def handle_command(command):
     cmd = command.strip().lower()
     if cmd == '/start':
-        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')
+        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         send_message(f"""🌍 بوت التداول الكمي - Global Edition
 المعادلات + Order Book + Smart Money = 80% من القرار
 مدعوم بـ Qwen AI + Gemini AI
 
 📊 الأصول المدعومة (45+ أصل):
- كريبتو: BTC, ETH, XRP, SOL, BNB...
- معادن: الذهب (GC=F), الفضة (SI=F)
+💰 كريبتو: BTC, ETH, XRP, SOL, BNB...
+🥇 معادن: الذهب (GC=F), الفضة (SI=F)
 🛢️ طاقة: النفط (CL=F)
 💱 فوركس: يورو (EURUSD=X), استرليني (GBPUSD=X), ين (USDJPY=X)
 🌾 سلع زراعية: القمح (ZW=F), الذرة (ZC=F), فول الصويا (ZS=F), البن (KC=F), السكر (SB=F), القطن (CT=F)
@@ -986,20 +1078,21 @@ def handle_command(command):
 🏢 أسهم كبرى: Apple (AAPL), Tesla (TSLA), Microsoft (MSFT), Amazon (AMZN), NVIDIA (NVDA), Google (GOOGL), Meta (META), Netflix (NFLX)
 
 📱 الأوامر:
-/smart <رمز> [تايم_فريم]
+/smart <رمز> [تايم_فريم] - تحليل فريم واحد
+/multi <رمز> - تحليل جميع الفريمات + كشف التعارض
 /stats - إحصائيات البوت
 /dashboard - لوحة التحكم
 
 أمثلة:
 /smart BTC-USD 4h
+/multi BTC-USD
 /smart GC=F 4h (الذهب)
 /smart EURUSD=X 4h (يورو/دولار)
-/smart CL=F 1h (النفط)
 /smart AAPL 1d (Apple)
 /smart ^GSPC 1d (S&P 500)
 /help
 
- Dashboard: {dashboard_url}/dashboard""")
+🌐 Dashboard: {dashboard_url}/dashboard""")
     elif cmd == '/stats':
         if get_performance:
             stats = get_performance()
@@ -1013,8 +1106,15 @@ def handle_command(command):
         else:
             send_message("⚠️ إحصائيات غير متاحة")
     elif cmd == '/dashboard':
-        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'N/A')
+        dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         send_message(f"🌐 لوحة التحكم:\n{dashboard_url}/dashboard")
+    elif cmd.startswith('/multi'):
+        parts = command.split(' ')
+        if len(parts) < 2:
+            send_message("الاستخدام: /multi <رمز>\nمثال: /multi BTC-USD")
+            return
+        symbol = parts[1].strip()
+        multi_timeframe_analysis(symbol)
     elif cmd.startswith('/smart'):
         parts = command.split(' ')
         if len(parts) < 2:
@@ -1028,11 +1128,16 @@ def handle_command(command):
             return
         smart_analysis(symbol, interval)
     elif cmd == '/help':
-        send_message("الأوامر:\n/smart <رمز> [15m, 1h, 4h, 1d]\n/stats\n/dashboard\n/help")
+        send_message("""الأوامر:
+/smart <رمز> [15m, 1h, 4h, 1d] - تحليل فريم واحد
+/multi <رمز> - تحليل جميع الفريمات + كشف التعارض
+/stats - إحصائيات البوت
+/dashboard - لوحة التحكم
+/help - هذه الرسالة""")
 
 def listen():
     last_id = 0
-    logger.info(" البوت يبدأ...")
+    logger.info("🤖 البوت يبدأ...")
     logger.info(f"📋 CHAT_ID: {CHAT_ID}")
     logger.info(f"🔑 TELEGRAM: {'نعم' if TELEGRAM_TOKEN else 'لا'}")
     logger.info(f"🤖 OPENROUTER: {'نعم' if OPENROUTER_API_KEY else 'لا'}")
