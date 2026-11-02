@@ -2,7 +2,6 @@ import yfinance as yf
 import numpy as np
 import logging
 import os
-import threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -27,14 +26,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
-
-ALL_SYMBOLS = [
-    'BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD',
-    'GC=F', 'SI=F', 'CL=F', 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X',
-    '^GSPC', '^IXIC', '^DJI', 'AAPL', 'TSLA', 'MSFT', 'NVDA', 'GOOGL', 'META',
-]
 
 def calculate_stochastic_analysis(prices):
     if not prices or len(prices) < 10:
@@ -119,26 +111,22 @@ def unified_analysis(symbol, interval="4h"):
         action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone)
         
         if 'شراء' in action:
-            sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
+            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
         elif 'بيع' in action:
-            sl, tp1, tp2 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5)
+            sl, tp1, tp2, tp3 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5), price - (atr * 3.5)
         else:
-            sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
+            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
         
         rr = abs(tp1 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
         
         return {
             'symbol': symbol, 'price': price, 'interval': interval, 'rsi': rsi, 'atr': atr,
-            'sl': sl, 'tp1': tp1, 'tp2': tp2, 'rr': rr, 'action': action, 'score': score,
+            'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 'action': action, 'score': score,
             'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
-
-def escape_html(text):
-    """تهريب أحرف HTML الخاصة"""
-    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -168,7 +156,7 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        # إرسال التقرير المختصر (بدون Markdown لتجنب الأخطاء)
+        # إرسال التقرير المختصر (بدون Markdown)
         emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
@@ -179,7 +167,9 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📌 مستويات التداول:
 🛑 SL: {data['sl']:,.2f}
-🎯 TP1: {data['tp1']:,.2f} | TP2: {data['tp2']:,.2f}
+🎯 TP1: {data['tp1']:,.2f}
+🎯 TP2: {data['tp2']:,.2f}
+🎯 TP3: {data['tp3']:,.2f}
 
 🧠 السبب: RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}
 
@@ -188,10 +178,22 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg)
         
-        # تسجيل في Trade Logger
+        # ✅ تسجيل في Trade Logger مع tp3
         if log_trade:
-            log_trade(symbol=data['symbol'], action=data['action'], price=data['price'], 
-                     score=data['score'], tp1=data['tp1'], tp2=data['tp2'], sl=data['sl'])
+            try:
+                log_trade(
+                    symbol=data['symbol'],
+                    action=data['action'],
+                    price=data['price'],
+                    score=data['score'],
+                    tp1=data['tp1'],
+                    tp2=data['tp2'],
+                    tp3=data['tp3'],
+                    sl=data['sl']
+                )
+                logger.info(f"✅ Trade logged: {data['symbol']}")
+            except Exception as e:
+                logger.error(f"Log error: {e}")
         
     except Exception as e:
         logger.error(f"Command error: {e}")
