@@ -36,7 +36,16 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
 GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest"]
-ALL_SYMBOLS = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD', 'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD', 'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD', 'GC=F', 'SI=F', 'CL=F', 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F', '^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX', 'AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX']
+
+ALL_SYMBOLS = [
+    'BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD',
+    'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD', 'XLM-USD', 'ALGO-USD', 'VET-USD', 'FIL-USD', 'TRX-USD',
+    'GC=F', 'SI=F', 'CL=F', 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X',
+    'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F',
+    '^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX',
+    'AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX',
+]
+
 CRYPTO_SYMBOLS = [s for s in ALL_SYMBOLS if s.endswith('-USD')]
 
 app = Flask(__name__)
@@ -66,11 +75,14 @@ def send_message(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         resp = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=15)
-        if resp.status_code != 200: logger.error(f"Send failed: {resp.text}")
-    except Exception as e: logger.error(f"Send error: {e}")
+        if resp.status_code != 200:
+            logger.error(f"Send failed: {resp.text}")
+    except Exception as e:
+        logger.error(f"Send error: {e}")
 
 def calculate_stochastic_analysis(prices: list, volumes: list = None) -> dict:
-    if not prices or len(prices) < 10: return {}
+    if not prices or len(prices) < 10:
+        return {}
     arr = np.array(prices, dtype=float)
     log_returns = np.diff(np.log(arr))
     daily_volatility = np.std(log_returns)
@@ -86,28 +98,46 @@ def calculate_stochastic_analysis(prices: list, volumes: list = None) -> dict:
     else:
         hurst_exponent = 0.5
         
-    return {'sharpe_ratio': sharpe_ratio, 'hurst_exponent': hurst_exponent, 'var_95': np.percentile(log_returns, 5)}
+    return {
+        'sharpe_ratio': sharpe_ratio,
+        'hurst_exponent': hurst_exponent,
+        'var_95': np.percentile(log_returns, 5),
+        'daily_volatility': daily_volatility,
+        'drift': drift
+    }
 
 def fetch_data(symbol, interval="1h"):
     try:
         period = "7d" if interval in ['1m', '5m'] else "1mo" if interval in ['15m', '30m'] else "6mo" if interval == '4h' else "1y"
         hist = yf.Ticker(symbol).history(period=period, interval=interval)
-        if hist.empty: return None
+        if hist.empty:
+            return None
         closes, highs, lows, volumes = hist['Close'].tolist(), hist['High'].tolist(), hist['Low'].tolist(), hist['Volume'].tolist()
         cleaned = [{'close': c, 'high': h, 'low': l, 'volume': v} for c, h, l, v in zip(closes, highs, lows, volumes) if c > 0 and not np.isnan(c)]
-        if len(cleaned) < 30: return None
-        return {'closes': [d['close'] for d in cleaned], 'highs': [d['high'] for d in cleaned], 'lows': [d['low'] for d in cleaned], 'volumes': [d['volume'] for d in cleaned], 'interval': interval}
-    except: return None
+        if len(cleaned) < 30:
+            return None
+        return {
+            'closes': [d['close'] for d in cleaned],
+            'highs': [d['high'] for d in cleaned],
+            'lows': [d['low'] for d in cleaned],
+            'volumes': [d['volume'] for d in cleaned],
+            'interval': interval
+        }
+    except Exception as e:
+        logger.error(f"Fetch error {symbol}: {e}")
+        return None
 
 def calc_rsi(prices, period=14):
-    if len(prices) < period + 1: return 50.0
+    if len(prices) < period + 1:
+        return 50.0
     gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
     losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
     avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
     return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
 
 def calc_atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1: return closes[-1] * 0.02
+    if len(closes) < period + 1:
+        return closes[-1] * 0.02
     tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
     return sum(tr) / period
 
@@ -116,30 +146,56 @@ def get_action_recommendation(data):
     score = 0
     math_signals = []
     
-    if rsi < 30: score += 3; math_signals.append("RSI تشبع بيعي")
-    elif rsi > 70: score -= 3; math_signals.append("RSI تشبع شرائي")
+    if rsi < 30:
+        score += 3
+        math_signals.append("RSI تشبع بيعي")
+    elif rsi > 70:
+        score -= 3
+        math_signals.append("RSI تشبع شرائي")
     
     stochastic = data.get('stochastic', {})
-    if stochastic.get('sharpe_ratio', 0) > 1.0: score += 2; math_signals.append("Sharpe ممتاز")
-    elif stochastic.get('sharpe_ratio', 0) < -0.5: score -= 2; math_signals.append("Sharpe سلبي")
+    sharpe = stochastic.get('sharpe_ratio', 0)
+    if sharpe > 1.0:
+        score += 2
+        math_signals.append("Sharpe ممتاز")
+    elif sharpe < -0.5:
+        score -= 2
+        math_signals.append("Sharpe سلبي")
     
     smc = data.get('smc', {})
     if smc:
         score += smc.get('score', 0)
-        if smc.get('premium_discount', {}).get('zone') == 'LOWER_DISCOUNT': score += 2
+        pd_zone = smc.get('premium_discount', {}).get('zone', '')
+        if pd_zone == 'LOWER_DISCOUNT':
+            score += 2
+            math_signals.append("منطقة خصم")
+        elif pd_zone == 'UPPER_PREMIUM':
+            score -= 2
+            math_signals.append("منطقة قسط")
     
-    if score >= 4: action, conf = 'شراء قوي 🟢', 'عالية'
-    elif score >= 1: action, conf = 'شراء حذر 🟡', 'متوسطة'
-    elif score <= -4: action, conf = 'بيع قوي 🔴', 'عالية'
-    elif score <= -1: action, conf = 'بيع حذر 🟠', 'متوسطة'
-    else: action, conf = 'انتظار ⚪', 'منخفضة'
+    if score >= 4:
+        action, conf = 'شراء قوي 🟢', 'عالية'
+    elif score >= 1:
+        action, conf = 'شراء حذر 🟡', 'متوسطة'
+    elif score <= -4:
+        action, conf = 'بيع قوي 🔴', 'عالية'
+    elif score <= -1:
+        action, conf = 'بيع حذر 🟠', 'متوسطة'
+    else:
+        action, conf = 'انتظار ⚪', 'منخفضة'
     
-    return {'action': action, 'score': score, 'confidence': conf, 'math_signals': math_signals}
+    return {
+        'action': action,
+        'score': score,
+        'confidence': conf,
+        'math_signals': math_signals
+    }
 
 def unified_analysis(symbol, interval="1h"):
     try:
         data = fetch_data(symbol, interval)
-        if not data: return None
+        if not data:
+            return None
         closes, highs, lows = data['closes'], data['highs'], data['lows']
         price = float(closes[-1])
         
@@ -149,18 +205,36 @@ def unified_analysis(symbol, interval="1h"):
         
         smc_data = None
         if get_smc_analysis:
-            try: smc_data = get_smc_analysis(closes, highs, lows, data.get('volumes', []))
-            except: pass
+            try:
+                smc_data = get_smc_analysis(closes, highs, lows, data.get('volumes', []))
+            except Exception as e:
+                logger.error(f"SMC error: {e}")
             
         rec = get_action_recommendation({'rsi': rsi, 'stochastic': stochastic, 'smc': smc_data})
         
-        if 'شراء' in rec['action']: sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
-        elif 'بيع' in rec['action']: sl, tp1, tp2 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5)
-        else: sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
+        if 'شراء' in rec['action']:
+            sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
+        elif 'بيع' in rec['action']:
+            sl, tp1, tp2 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5)
+        else:
+            sl, tp1, tp2 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5)
         
         rr = abs(tp1 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
         
-        result = {'symbol': symbol, 'price': price, 'interval': interval, 'rsi': rsi, 'atr': atr, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'rr': rr, 'recommendation': rec, 'stochastic': stochastic}
+        result = {
+            'symbol': symbol,
+            'price': price,
+            'interval': interval,
+            'rsi': rsi,
+            'atr': atr,
+            'sl': sl,
+            'tp1': tp1,
+            'tp2': tp2,
+            'rr': rr,
+            'recommendation': rec,
+            'stochastic': stochastic
+        }
+        
         if smc_data and smc_data.get('premium_discount'):
             result['smc_pd'] = f"{smc_data['premium_discount']['zone']} ({smc_data['premium_discount']['percentage']:.0f}%)"
         else:
@@ -172,31 +246,44 @@ def unified_analysis(symbol, interval="1h"):
         return None
 
 def ask_qwen(data):
-    if not OPENROUTER_API_KEY: return None
+    if not OPENROUTER_API_KEY:
+        return None
     try:
         prompt = f"رمز: {data['symbol']}. السعر: {data['price']}. RSI: {data['rsi']:.1f}. المنطقة: {data.get('smc_pd', 'N/A')}. Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. أعطِ سبباً واحداً مختصراً جداً بالعربية (جملة واحدة) للتوصية."
-        res = requests.post(OPENROUTER_API_URL, json={"model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 100}, headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"}, timeout=30)
-        if res.status_code == 200: return clean_markdown(res.json()['choices'][0]['message']['content'])
-    except: pass
+        res = requests.post(
+            OPENROUTER_API_URL,
+            json={
+                "model": "qwen/qwen-2.5-72b-instruct",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 100
+            },
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            timeout=30
+        )
+        if res.status_code == 200:
+            return clean_markdown(res.json()['choices'][0]['message']['content'])
+    except Exception as e:
+        logger.error(f"Qwen error: {e}")
     return None
 
 def send_condensed_report(data, qwen_analysis=None):
     rec = data.get('recommendation', {})
     action = rec.get('action', 'انتظار')
     
-    # تحديد الإيموجي بناءً على التوصية
-    if 'شراء' in action: emoji = "🟢"
-    elif 'بيع' in action: emoji = "🔴"
-    else: emoji = "⚪"
+    if 'شراء' in action:
+        emoji = "🟢"
+    elif 'بيع' in action:
+        emoji = "🔴"
+    else:
+        emoji = "⚪"
     
-    # تلخيص سبب الذكاء الاصطناعي في جملة قصيرة
     ai_reason = qwen_analysis if qwen_analysis else "توافق المؤشرات الكمية مع منطقة سعرية مناسبة."
     if len(ai_reason) > 120:
         ai_reason = ai_reason[:117] + "..."
         
     dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
     
-    # الرسالة المختصرة النهائية (رسالة واحدة فقط)
     msg = f"""{emoji} **{data['symbol']} ({data['interval'].upper()})**
 💰 **السعر:** `${data['price']:,.2f}`
 🎯 **التوصية:** {action} (Score: {rec.get('score', 0)})
@@ -210,8 +297,8 @@ def send_condensed_report(data, qwen_analysis=None):
 {ai_reason}
 📊 المنطقة: {data.get('smc_pd', 'N/A')} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}
 
-🔗 للتفاصيل الكاملة والمخططات: {dashboard_url}/dashboard
-⚠️ _هذه ليست نصيحة مالية، التداول ينطوي على مخاطر._"""
+🔗 للتفاصيل الكاملة: {dashboard_url}/dashboard
+⚠️ _هذه ليست نصيحة مالية._"""
     
     send_message(msg)
 
@@ -224,22 +311,28 @@ def smart_analysis(symbol, interval="1h"):
     
     qwen_ai = ask_qwen(data)
     
-    # إرسال صورة الإشارة (إن وجدت)
     if generate_signal_image:
         try:
             image_bytes = generate_signal_image(data)
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
             files = {'photo': ('signal.png', image_bytes, 'image/png')}
             requests.post(url, files=files, data={'chat_id': CHAT_ID, 'caption': f"📊 {symbol}"}, timeout=30)
-        except: pass
+        except Exception as e:
+            logger.error(f"Image error: {e}")
     
-    # إرسال التقرير المختصر
     send_condensed_report(data, qwen_ai)
     
-    # تسجيل في السجل
     if log_trade:
         rec = data.get('recommendation', {})
-        log_trade(symbol=data['symbol'], action=rec.get('action', ''), price=data['price'], score=rec.get('score', 0), tp1=data.get('tp1', 0), tp2=data.get('tp2', 0), sl=data.get('sl', 0))
+        log_trade(
+            symbol=data['symbol'],
+            action=rec.get('action', ''),
+            price=data['price'],
+            score=rec.get('score', 0),
+            tp1=data.get('tp1', 0),
+            tp2=data.get('tp2', 0),
+            sl=data.get('sl', 0)
+        )
 
 def handle_command(command):
     cmd = command.strip().lower()
@@ -259,38 +352,73 @@ def handle_command(command):
         if get_performance:
             stats = get_performance()
             send_message(f"📊 الإجمالي: {stats.get('total', 0)}\n✅ الرابحة: {stats.get('wins', 0)}\n❌ الخاسرة: {stats.get('losses', 0)}\n📈 النجاح: {stats.get('win_rate', 0)}%")
+        else:
+            send_message("⚠️ إحصائيات غير متاحة")
     elif cmd == '/dashboard':
         send_message(f"🔗 {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
     elif cmd.startswith('/multi'):
         parts = command.split(' ')
-        if len(parts) < 2: return send_message("الاستخدام: /multi <رمز>")
+        if len(parts) < 2:
+            return send_message("الاستخدام: /multi <رمز>")
         send_message(f"⏳ جاري مقارنة الفريمات لـ {parts[1]}...")
-        # (يمكن إضافة منطق المقارنة المختصر هنا مستقبلاً)
         send_message("✅ ميزة /multi قيد التطوير لتعرض ملخصاً سريعاً للفريمات.")
     elif cmd.startswith('/smart'):
         parts = command.split(' ')
-        if len(parts) < 2: return send_message("الاستخدام: /smart <رمز> [تايم_فريم]")
+        if len(parts) < 2:
+            return send_message("الاستخدام: /smart <رمز> [تايم_فريم]")
         symbol = parts[1].strip()
         interval = parts[2].strip().lower() if len(parts) > 2 else "4h"
-        if interval not in ['15m', '1h', '4h', '1d']: interval = "4h"
+        if interval not in ['15m', '1h', '4h', '1d']:
+            interval = "4h"
         smart_analysis(symbol, interval)
+    elif cmd == '/help':
+        send_message("""الأوامر:
+/smart <رمز> [15m, 1h, 4h, 1d]
+/multi <رمز>
+/stats
+/dashboard
+/help""")
 
+# ✅ دالة listen المُصححة - تحل مشكلة التكرار
 def listen():
     last_id = 0
     logger.info("🤖 Bot started...")
+    
+    # ✅ احصل على آخر update_id لتجنب تكرار الرسائل القديمة
+    try:
+        resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", timeout=10)
+        if resp.status_code == 200 and resp.json().get('ok'):
+            updates = resp.json()['result']
+            if updates:
+                last_id = updates[-1]['update_id']
+                logger.info(f"✅ Starting from update_id: {last_id}")
+    except Exception as e:
+        logger.error(f"Error getting last update: {e}")
+    
     while True:
         try:
-            resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", params={"offset": last_id + 1, "timeout": 10}, timeout=15)
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            params = {"offset": last_id + 1, "timeout": 10}
+            resp = requests.get(url, params=params, timeout=15)
+            
             if resp.status_code == 200 and resp.json().get('ok'):
-                for update in resp.json()['result']:
+                updates = resp.json()['result']
+                
+                for update in updates:
                     if 'message' in update and 'text' in update['message']:
-                        if str(update['message']['chat']['id']).strip() == str(CHAT_ID).strip():
+                        incoming_chat_id = str(update['message']['chat']['id']).strip()
+                        if incoming_chat_id == str(CHAT_ID).strip():
+                            logger.info(f"📩 Processing: {update['message']['text']}")
                             handle_command(update['message']['text'])
+                    
+                    # ✅ تحديث last_id بعد كل update
                     last_id = update['update_id']
+                    
         except Exception as e:
             logger.error(f"Listen error: {e}")
-        time.sleep(1)
+            time.sleep(2)
 
 if __name__ == "__main__":
+    logger.info("🧮 Starting QUANT Trading Bot - Condensed Edition...")
     threading.Thread(target=run_flask, daemon=True).start()
     listen()
