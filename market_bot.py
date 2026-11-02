@@ -40,12 +40,12 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 FINNHUB_API_URL = "https://finnhub.io/api/v1"
 
+# ✅ قائمة نماذج Gemini محدثة
 GEMINI_MODELS = [
-    "gemini-1.5-flash-latest",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
-    "gemini-pro",
-    "gemini-2.0-flash-exp"
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest"
 ]
 
 ALERTED_NEWS_FILE = 'alerted_news.txt'
@@ -212,7 +212,8 @@ def fetch_data(symbol, interval="1h"):
             if not np.isnan(c) and not np.isnan(h) and not np.isnan(l) and not np.isnan(v) and c > 0
         ]
         
-        if len(cleaned) < 50:
+        min_candles = 30 if interval in ['1d', '1wk', '1mo'] else 50
+        if len(cleaned) < min_candles:
             logger.warning(f"⚠️ بيانات غير كافية لـ {symbol}: {len(cleaned)} شمعة")
             return None
         
@@ -715,29 +716,39 @@ RSI: {data['rsi']:.1f}
         logger.error(f"خطأ Qwen: {e}")
         return None
 
+# ✅ دالة Gemini المحسّنة
 def ask_gemini(data):
     if not GEMINI_API_KEY:
-        logger.warning("⚠️ GEMINI_API_KEY غير موجود")
+        logger.warning("⚠️ GEMINI_API_KEY غير موجود أو فارغ")
         return None
     try:
         rec = data.get('recommendation', {})
         math_sigs = rec.get('math_signals', [])
-        prompt = f"""أنت محلل تداول. الرمز: {data['symbol']}.
+        prompt = f"""أنت محلل تداول محترف. الرمز: {data['symbol']}.
 السعر: ${data['price']:,.2f}
 RSI: {data['rsi']:.1f}
 الإشارات: {' | '.join(math_sigs[:3]) if math_sigs else 'لا توجد'}
 
-رأيك بالعربية في 3 أسطر (بدون Markdown):
-- هل تتفق؟
-- ما الذي قد يفوته؟
-- نصيحة عملية.
+أعطِ رأيك بالعربية فقط في 3 نقاط قصيرة:
+1. هل تتفق مع التحليل؟ ولماذا؟
+2. ما الذي قد يفوته التحليل؟
+3. نصيحة عملية للمتداول.
 
-لا تستخدم # أو * أو **."""
+مهم: أجب بالعربية فقط، لا تستخدم الإنجليزية."""
+        
         for model_name in GEMINI_MODELS:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}}
-                res = requests.post(url, json=payload, timeout=30)
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.3,
+                        "maxOutputTokens": 500
+                    }
+                }
+                headers = {"Content-Type": "application/json"}
+                res = requests.post(url, json=payload, headers=headers, timeout=30)
+                
                 if res.status_code == 200:
                     result = res.json()
                     if 'candidates' in result and len(result['candidates']) > 0:
@@ -746,11 +757,18 @@ RSI: {data['rsi']:.1f}
                             analysis = candidate['content']['parts'][0]['text']
                             cleaned = clean_markdown(analysis)
                             if cleaned and len(cleaned) > 10:
+                                logger.info(f"✅ Gemini نجح باستخدام {model_name}")
                                 return cleaned
-            except: continue
+                else:
+                    logger.warning(f"⚠️ Gemini {model_name} فشل: {res.status_code} - {res.text[:100]}")
+            except Exception as e:
+                logger.warning(f"⚠️ خطأ في {model_name}: {e}")
+                continue
+        
+        logger.error("❌ جميع نماذج Gemini فشلت")
         return None
     except Exception as e:
-        logger.error(f"خطأ Gemini: {e}")
+        logger.error(f"❌ خطأ Gemini: {e}")
         return None
 
 def send_signal_image(data):
@@ -943,12 +961,9 @@ def smart_analysis(symbol, interval="1h"):
         )
         logger.info(f"✅ تم تسجيل التوصية: {symbol}")
 
-# ✅ أمر /multi المحسّن - تقرير كامل مع AI و SMC والأهداف
 def multi_timeframe_analysis(symbol):
-    """تحليل شامل على الفريم الرئيسي (4H) + مقارنة مع 1D و 1W"""
     send_message(f"🔍 جاري تحليل {symbol} على جميع الفريمات...")
     
-    # 1️⃣ تحليل الفريم الرئيسي (4H) بشكل كامل
     send_message("⏳ جاري تحليل الفريم الرئيسي (4H)...")
     main_data = unified_analysis(symbol, "4h")
     
@@ -956,26 +971,20 @@ def multi_timeframe_analysis(symbol):
         send_message(f"❌ فشل تحليل {symbol} على فريم 4H.")
         return
     
-    # 2️⃣ تحليل الفريمات الأخرى (ملخص فقط)
     send_message("⏳ جاري تحليل فريم 1D...")
     daily_data = unified_analysis(symbol, "1d")
     
     send_message("⏳ جاري تحليل فريم 1W...")
     weekly_data = unified_analysis(symbol, "1w")
     
-    # 3️⃣ تحليل الذكاء الاصطناعي للفريم الرئيسي
     qwen_ai = None
     if OPENROUTER_API_KEY:
         send_message("🤖 جاري التحليل بواسطة Qwen AI...")
         qwen_ai = ask_qwen(main_data)
     
-    # 4️⃣ إرسال صورة الإشارة
     send_signal_image(main_data)
-    
-    # 5️⃣ إرسال التقرير الكامل للفريم الرئيسي
     send_unified_report(main_data, qwen_ai, None)
     
-    # 6️⃣ إرسال مقارنة الفريمات
     send_message(f"\n{'='*45}\n📊 مقارنة الفريمات لـ {symbol}\n{'='*45}")
     
     comparison = ""
@@ -999,7 +1008,6 @@ def multi_timeframe_analysis(symbol):
     
     send_message(comparison)
     
-    # 7️⃣ كشف التعارض والتوصية النهائية
     scores = []
     if main_data: scores.append(main_data['recommendation'].get('score', 0))
     if daily_data: scores.append(daily_data['recommendation'].get('score', 0))
@@ -1042,7 +1050,6 @@ def multi_timeframe_analysis(symbol):
         final_msg += f"\n\n⚠️ ليست نصيحة مالية"
         send_message(final_msg)
     
-    # 8️⃣ تسجيل التوصية
     if log_trade:
         rec = main_data.get('recommendation', {})
         log_trade(
