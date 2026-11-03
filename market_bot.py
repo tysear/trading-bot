@@ -4,6 +4,7 @@ import logging
 import os
 import requests
 import threading
+from io import BytesIO
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -36,7 +37,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot is running!"
+    return "Bot is running!"
 
 @app.route('/health')
 def health():
@@ -86,14 +87,6 @@ def dashboard():
             }
             .stat-card h3 { color: #888; font-size: 0.9em; margin-bottom: 10px; }
             .stat-card .value { font-size: 2.5em; font-weight: bold; color: #00d2ff; }
-            .section {
-                background: rgba(255,255,255,0.05);
-                border: 1px solid rgba(255,255,255,0.1);
-                border-radius: 15px;
-                padding: 30px;
-                margin-bottom: 20px;
-            }
-            .section h2 { color: #00d2ff; margin-bottom: 20px; }
             .refresh-btn {
                 display: block;
                 margin: 20px auto;
@@ -117,107 +110,88 @@ def dashboard():
     </head>
     <body>
         <div class="container">
-            <h1>🧮 Quant Trading Bot</h1>
-            <p class="subtitle">SMC Edition - لوحة التحكم الاحترافية</p>
-            <div class="status">✅ البوت يعمل بنجاح</div>
+            <h1>Quant Trading Bot</h1>
+            <p class="subtitle">SMC Edition - Dashboard</p>
+            <div class="status">Bot is running successfully</div>
             <div class="stats-grid">
                 <div class="stat-card">
-                    <h3>📊 إجمالي التوصيات</h3>
+                    <h3>Total Trades</h3>
                     <div class="value">2</div>
                 </div>
                 <div class="stat-card">
-                    <h3>✅ معدل النجاح</h3>
+                    <h3>Win Rate</h3>
                     <div class="value">0%</div>
                 </div>
                 <div class="stat-card">
-                    <h3>🎯 الرابحة</h3>
+                    <h3>Wins</h3>
                     <div class="value">0</div>
                 </div>
                 <div class="stat-card">
-                    <h3>⏳ قيد الانتظار</h3>
+                    <h3>Pending</h3>
                     <div class="value">2</div>
                 </div>
             </div>
-            <button class="refresh-btn" onclick="location.reload()">🔄 تحديث</button>
+            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
         </div>
     </body>
     </html>
     """
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-# ✅ دالة المشتقات التفاضلية
-def advanced_differential_analysis(closes, volumes):
-    """
-    تحسب المشتقات الأولى والثانية (السرعة والتسارع) + التكامل
-    """
     try:
-        if len(closes) < 10:
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host='0.0.0.0', port=port)
+    except Exception as e:
+        logger.error(f"Flask error: {e}")
+
+def advanced_differential_analysis(closes):
+    try:
+        if not closes or len(closes) < 10:
             return None
-        
-        prices = np.array(closes, dtype=float)
-        
-        # المشتق الأول (السرعة - Rate of Change)
+        prices = np.array(closes[-20:], dtype=float)
         velocity = np.diff(prices)
-        current_velocity = velocity[-1]
-        avg_velocity = np.mean(velocity[-10:]) if len(velocity) >= 10 else np.mean(velocity)
+        current_velocity = float(velocity[-1])
+        acceleration = float(np.diff(velocity)[-1]) if len(velocity) >= 2 else 0.0
         
-        # المشتق الثاني (التسارع - Acceleration)
-        if len(velocity) >= 2:
-            acceleration = np.diff(velocity)[-1]
-            avg_acceleration = np.mean(np.diff(velocity)[-10:]) if len(velocity) >= 10 else np.mean(np.diff(velocity))
-        else:
-            acceleration = 0.0
-            avg_acceleration = 0.0
-        
-        # التكامل (المساحة تحت المنحنى - Cumulative Change)
-        integral = np.trapz(prices)
-        
-        # التقلب (Volatility)
-        volatility = np.std(prices)
-        
-        # تحديد الاتجاه بناءً على المشتقات
         if current_velocity > 0 and acceleration > 0:
-            trend = "صاعد متسارع 🚀"
+            trend = "صاعد متسارع"
             trend_score = 2
-        elif current_velocity > 0 and acceleration < 0:
-            trend = "صاعد متباطئ ⚠️"
+        elif current_velocity > 0:
+            trend = "صاعد متباطئ"
             trend_score = 1
         elif current_velocity < 0 and acceleration < 0:
-            trend = "هابط متسارع 🔻"
+            trend = "هابط متسارع"
             trend_score = -2
-        elif current_velocity < 0 and acceleration > 0:
-            trend = "هابط متباطئ ⚠️"
+        elif current_velocity < 0:
+            trend = "هابط متباطئ"
             trend_score = -1
         else:
-            trend = "محايد 〰️"
+            trend = "محايد"
             trend_score = 0
         
         return {
             'velocity': current_velocity,
-            'avg_velocity': avg_velocity,
             'acceleration': acceleration,
-            'avg_acceleration': avg_acceleration,
-            'integral': integral,
-            'volatility': volatility,
             'trend': trend,
             'trend_score': trend_score
         }
     except Exception as e:
-        logger.error(f"Differential analysis error: {e}")
+        logger.error(f"Differential error: {e}")
         return None
 
 def calculate_stochastic_analysis(prices):
-    if not prices or len(prices) < 10:
+    try:
+        if not prices or len(prices) < 10:
+            return {}
+        arr = np.array(prices, dtype=float)
+        log_returns = np.diff(np.log(arr))
+        daily_volatility = np.std(log_returns)
+        drift = np.mean(log_returns)
+        sharpe_ratio = (drift - 0.02/252) / daily_volatility if daily_volatility != 0 else 0
+        return {'sharpe_ratio': sharpe_ratio, 'var_95': float(np.percentile(log_returns, 5))}
+    except Exception as e:
+        logger.error(f"Stochastic error: {e}")
         return {}
-    arr = np.array(prices, dtype=float)
-    log_returns = np.diff(np.log(arr))
-    daily_volatility = np.std(log_returns)
-    drift = np.mean(log_returns)
-    sharpe_ratio = (drift - 0.02/252) / daily_volatility if daily_volatility != 0 else 0
-    return {'sharpe_ratio': sharpe_ratio, 'var_95': np.percentile(log_returns, 5)}
 
 def fetch_data(symbol, interval="4h"):
     try:
@@ -232,60 +206,81 @@ def fetch_data(symbol, interval="4h"):
         cleaned = [c for c in closes if c > 0 and not np.isnan(c)]
         if len(cleaned) < 30:
             return None
-        return {'closes': cleaned, 'highs': highs[:len(cleaned)], 'lows': lows[:len(cleaned)], 'volumes': volumes[:len(cleaned)]}
+        return {
+            'closes': cleaned,
+            'highs': highs[:len(cleaned)],
+            'lows': lows[:len(cleaned)],
+            'volumes': volumes[:len(cleaned)]
+        }
     except Exception as e:
         logger.error(f"Fetch error: {e}")
         return None
 
 def calc_rsi(prices, period=14):
-    if len(prices) < period + 1:
+    try:
+        if len(prices) < period + 1:
+            return 50.0
+        gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
+        losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
+        avg_gain = sum(gains)/period
+        avg_loss = sum(losses)/period
+        return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
+    except:
         return 50.0
-    gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
-    losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
-    avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
-    return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
 
 def calc_atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
+    try:
+        if len(closes) < period + 1:
+            return closes[-1] * 0.02
+        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
+        return sum(tr) / period
+    except:
         return closes[-1] * 0.02
-    tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
-    return sum(tr) / period
 
 def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     score = 0
-    if rsi < 30: score += 3
-    elif rsi > 70: score -= 3
-    if sharpe > 1.0: score += 2
-    elif sharpe < -0.5: score -= 2
-    if smc_score: score += smc_score
-    if smc_zone == 'LOWER_DISCOUNT': score += 2
-    elif smc_zone == 'UPPER_PREMIUM': score -= 2
-    
-    # ✅ إضافة المشتقات التفاضلية
+    if rsi < 30:
+        score += 3
+    elif rsi > 70:
+        score -= 3
+    if sharpe > 1.0:
+        score += 2
+    elif sharpe < -0.5:
+        score -= 2
+    if smc_score:
+        score += smc_score
+    if smc_zone == 'LOWER_DISCOUNT':
+        score += 2
+    elif smc_zone == 'UPPER_PREMIUM':
+        score -= 2
     score += diff_trend_score
     
-    if score >= 4: return 'شراء قوي', score, 'عالية'
-    elif score >= 1: return 'شراء حذر', score, 'متوسطة'
-    elif score <= -4: return 'بيع قوي', score, 'عالية'
-    elif score <= -1: return 'بيع حذر', score, 'متوسطة'
-    else: return 'انتظار', score, 'منخفضة'
+    if score >= 4:
+        return 'شراء قوي', score, 'عالية'
+    elif score >= 1:
+        return 'شراء حذر', score, 'متوسطة'
+    elif score <= -4:
+        return 'بيع قوي', score, 'عالية'
+    elif score <= -1:
+        return 'بيع حذر', score, 'متوسطة'
+    else:
+        return 'انتظار', score, 'منخفضة'
 
 def unified_analysis(symbol, interval="4h"):
     try:
         data = fetch_data(symbol, interval)
         if not data:
             return None
-        closes, highs, lows = data['closes'], data['highs'], data['lows']
+        closes = data['closes']
+        highs = data['highs']
+        lows = data['lows']
         price = float(closes[-1])
         rsi = calc_rsi(closes)
         atr = calc_atr(highs, lows, closes)
         stochastic = calculate_stochastic_analysis(closes)
-        
-        # ✅ حساب المشتقات التفاضلية
-        diff_analysis = advanced_differential_analysis(closes, data.get('volumes', []))
+        diff_analysis = advanced_differential_analysis(closes)
         diff_trend_score = diff_analysis.get('trend_score', 0) if diff_analysis else 0
         
-        smc_data = None
         smc_score = 0
         smc_zone = 'محايد'
         if get_smc_analysis:
@@ -299,18 +294,39 @@ def unified_analysis(symbol, interval="4h"):
         action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone, diff_trend_score)
         
         if 'شراء' in action:
-            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
+            sl = price - (atr * 0.8)
+            tp1 = price + (atr * 1.5)
+            tp2 = price + (atr * 2.5)
+            tp3 = price + (atr * 3.5)
         elif 'بيع' in action:
-            sl, tp1, tp2, tp3 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5), price - (atr * 3.5)
+            sl = price + (atr * 0.8)
+            tp1 = price - (atr * 1.5)
+            tp2 = price - (atr * 2.5)
+            tp3 = price - (atr * 3.5)
         else:
-            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
+            sl = price - (atr * 0.8)
+            tp1 = price + (atr * 1.5)
+            tp2 = price + (atr * 2.5)
+            tp3 = price + (atr * 3.5)
         
         rr = abs(tp1 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
         
         return {
-            'symbol': symbol, 'price': price, 'interval': interval, 'rsi': rsi, 'atr': atr,
-            'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 'action': action, 'score': score,
-            'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone,
+            'symbol': symbol,
+            'price': price,
+            'interval': interval,
+            'rsi': rsi,
+            'atr': atr,
+            'sl': sl,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'rr': rr,
+            'action': action,
+            'score': score,
+            'confidence': conf,
+            'stochastic': stochastic,
+            'smc_zone': smc_zone,
             'differential': diff_analysis
         }
     except Exception as e:
@@ -380,59 +396,68 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if interval not in ['15m', '1h', '4h', '1d']:
             interval = "4h"
         
-        await update.message.reply_text(f"⏳ جاري تحليل {symbol}...")
+        await update.message.reply_text(f"جاري تحليل {symbol}...")
         
         data = unified_analysis(symbol, interval)
         if not data:
-            await update.message.reply_text(f"❌ فشل تحليل {symbol}. تأكد من صحة الرمز.")
+            await update.message.reply_text(f"فشل تحليل {symbol}. تأكد من صحة الرمز.")
             return
         
         ai_analysis = None
         if OPENROUTER_API_KEY:
-            await update.message.reply_text("🤖 جاري تحليل الذكاء الاصطناعي...")
+            await update.message.reply_text("جاري تحليل الذكاء الاصطناعي...")
             ai_analysis = ask_qwen_ai(data)
         
         if generate_signal_image:
             try:
                 image_bytes = generate_signal_image(data)
-                from io import BytesIO
-                await update.message.reply_photo(photo=BytesIO(image_bytes), caption=f"📊 {symbol}")
+                await update.message.reply_photo(photo=BytesIO(image_bytes), caption=f"{symbol}")
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
+        emoji = ""
+        if 'شراء' in data['action']:
+            emoji = ""
+        elif 'بيع' in data['action']:
+            emoji = ""
+        else:
+            emoji = ""
+        
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
-        # ✅ إضافة قسم المشتقات التفاضلية
         diff_section = ""
         if data.get('differential'):
             diff = data['differential']
-            diff_section = f"""
-🔬 المشتقات التفاضلية:
-• السرعة (المشتق الأول): {diff['velocity']:+.2f}
-• التسارع (المشتق الثاني): {diff['acceleration']:+.2f}
-• الاتجاه: {diff['trend']}
-"""
+            diff_section = (
+                f"\nالمشتقات التفاضلية:\n"
+                f"- السرعة: {diff['velocity']:+.2f}\n"
+                f"- التسارع: {diff['acceleration']:+.2f}\n"
+                f"- الاتجاه: {diff['trend']}\n"
+            )
         
         ai_section = ""
         if ai_analysis:
-            ai_section = f"\n🤖 تحليل الذكاء الاصطناعي:\n{ai_analysis}\n"
+            ai_section = f"\nتحليل الذكاء الاصطناعي:\n{ai_analysis}\n"
         else:
-            ai_section = f"\n🧠 RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}\n"
+            ai_section = f"\nRSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}\n"
         
-        msg = f"""{emoji} {data['symbol']} ({data['interval'].upper()})
-💰 السعر: {data['price']:,.2f}
-🎯 التوصية: {data['action']} (Score: {data['score']})
-⚖️ العائد/المخاطرة: 1:{data['rr']:.2f}
-
-📌 مستويات التداول:
-🛑 SL: {data['sl']:,.2f}
-🎯 TP1: {data['tp1']:,.2f}
-🎯 TP2: {data['tp2']:,.2f}
-🎯 TP3: {data['tp3']:,.2f}
-{diff_section}{ai_section}
-🔗 للتفاصيل: {dashboard_url}/dashboard
-⚠️ هذه ليست نصيحة مالية."""
+        msg = (
+            f"{emoji} {data['symbol']} ({data['interval'].upper()})\n"
+            f"السعر: {data['price']:,.2f}\n"
+            f"التوصية: {data['action']} (Score: {data['score']})\n"
+            f"العائد/المخاطرة: 1:{data['rr']:.2f}\n"
+            f"\n"
+            f"مستويات التداول:\n"
+            f"SL: {data['sl']:,.2f}\n"
+            f"TP1: {data['tp1']:,.2f}\n"
+            f"TP2: {data['tp2']:,.2f}\n"
+            f"TP3: {data['tp3']:,.2f}\n"
+            f"{diff_section}"
+            f"{ai_section}"
+            f"\n"
+            f"للتفاصيل: {dashboard_url}/dashboard\n"
+            f"هذه ليست نصيحة مالية."
+        )
         
         await update.message.reply_text(msg)
         
@@ -448,48 +473,52 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     tp3=data['tp3'],
                     sl=data['sl']
                 )
-                logger.info(f"✅ Trade logged: {data['symbol']}")
+                logger.info(f"Trade logged: {data['symbol']}")
             except Exception as e:
                 logger.error(f"Log error: {e}")
         
     except Exception as e:
         logger.error(f"Command error: {e}")
-        await update.message.reply_text(f"❌ حدث خطأ: {str(e)}")
+        await update.message.reply_text(f"حدث خطأ: {str(e)}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
-    msg = f"""🌍 بوت التداول الكمي المتقدم
-معادلات تفاضلية + Stochastic Calculus + Smart Money + ذكاء اصطناعي
-
-الأوامر:
-/smart <رمز> [تايم_فريم]
-/stats
-/dashboard
-
-🔗 {dashboard_url}/dashboard"""
+    msg = (
+        f"بوت التداول الكمي المتقدم\n"
+        f"معادلات تفاضلية + Stochastic Calculus + Smart Money + ذكاء اصطناعي\n"
+        f"\n"
+        f"الأوامر:\n"
+        f"/smart <رمز> [تايم_فريم]\n"
+        f"/stats\n"
+        f"/dashboard\n"
+        f"\n"
+        f"{dashboard_url}/dashboard"
+    )
     await update.message.reply_text(msg)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if get_performance:
         stats = get_performance()
-        msg = f"""📊 الإجمالي: {stats.get('total', 0)}
-✅ الرابحة: {stats.get('wins', 0)}
-❌ الخاسرة: {stats.get('losses', 0)}
-📈 النجاح: {stats.get('win_rate', 0)}%"""
+        msg = (
+            f"الإجمالي: {stats.get('total', 0)}\n"
+            f"الرابحة: {stats.get('wins', 0)}\n"
+            f"الخاسرة: {stats.get('losses', 0)}\n"
+            f"النجاح: {stats.get('win_rate', 0)}%"
+        )
         await update.message.reply_text(msg)
     else:
-        await update.message.reply_text("⚠️ إحصائيات غير متاحة")
+        await update.message.reply_text("إحصائيات غير متاحة")
 
 async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
-    await update.message.reply_text(f"🔗 {dashboard_url}/dashboard")
+    await update.message.reply_text(f"{dashboard_url}/dashboard")
 
 def main():
-    logger.info("🧮 Starting bot with Differential Calculus + AI...")
+    logger.info("Starting bot...")
     
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info("✅ Flask Dashboard started")
+    logger.info("Flask Dashboard started")
     
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -498,7 +527,7 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("dashboard", dashboard_command))
     
-    logger.info("✅ Bot started successfully!")
+    logger.info("Bot started successfully!")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
