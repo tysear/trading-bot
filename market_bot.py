@@ -3,6 +3,8 @@ import numpy as np
 import logging
 import os
 import requests
+import threading
+from flask import Flask, render_template, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -29,6 +31,47 @@ CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+
+# ✅ إعداد Flask للداشبورد
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot running!"
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
+
+@app.route('/dashboard')
+def dashboard():
+    try:
+        if get_performance:
+            stats = get_performance()
+            return f"""
+            <html>
+            <head><title>Trading Bot Dashboard</title></head>
+            <body style="font-family: Arial; background: #1a1a2e; color: #eee; padding: 50px;">
+                <h1>📊 لوحة تحكم البوت</h1>
+                <div style="background: #16213e; padding: 30px; border-radius: 10px; margin-top: 20px;">
+                    <p>📈 الإجمالي: {stats.get('total', 0)}</p>
+                    <p>✅ الرابحة: {stats.get('wins', 0)}</p>
+                    <p>❌ الخاسرة: {stats.get('losses', 0)}</p>
+                    <p>🎯 معدل النجاح: {stats.get('win_rate', 0)}%</p>
+                    <p>⏳ قيد الانتظار: {stats.get('pending', 0)}</p>
+                </div>
+                <p style="margin-top: 20px;"><a href="/health" style="color: #4CAF50;">✅ Health Check</a></p>
+            </body>
+            </html>
+            """
+        else:
+            return "<html><body>Dashboard not available</body></html>"
+    except:
+        return "<html><body>Error loading dashboard</body></html>"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def calculate_stochastic_analysis(prices):
     if not prices or len(prices) < 10:
@@ -130,7 +173,6 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
-# ✅ دالة الذكاء الاصطناعي - جملة واحدة فقط
 def ask_qwen_ai(data):
     if not OPENROUTER_API_KEY:
         return None
@@ -143,8 +185,7 @@ def ask_qwen_ai(data):
             f"RSI: {data['rsi']:.1f}. "
             f"Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
             f"المنطقة: {data['smc_zone']}. "
-            f"أعطِ جملة واحدة فقط بالعربية (بدون رموز أو علامات ترقيم زائدة) تشرح سبب التوصية وتذكر المخاطر. "
-            f"لا تستخدم ** أو # أو أي رموز Markdown."
+            f"أعطِ جملة واحدة فقط بالعربية (بدون رموز أو علامات ترقيم زائدة) تشرح سبب التوصية وتذكر المخاطر."
         )
         
         res = requests.post(
@@ -168,9 +209,7 @@ def ask_qwen_ai(data):
             result = res.json()
             if 'choices' in result and len(result['choices']) > 0:
                 analysis = result['choices'][0]['message']['content'].strip()
-                # تنظيف الرد من أي رموز Markdown
                 analysis = analysis.replace('**', '').replace('*', '').replace('#', '').replace('`', '')
-                # تقصير إذا كان طويلاً جداً
                 if len(analysis) > 200:
                     analysis = analysis[:197] + "..."
                 return analysis
@@ -197,11 +236,9 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ فشل تحليل {symbol}. تأكد من صحة الرمز.")
             return
         
-        # ✅ استدعاء الذكاء الاصطناعي
         await update.message.reply_text("🤖 جاري تحليل الذكاء الاصطناعي...")
         ai_analysis = ask_qwen_ai(data)
         
-        # إرسال صورة الإشارة
         if generate_signal_image:
             try:
                 image_bytes = generate_signal_image(data)
@@ -210,11 +247,9 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        # إرسال التقرير المختصر
-        emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
+        emoji = "" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
-        # بناء قسم الذكاء الاصطناعي
         ai_section = ""
         if ai_analysis:
             ai_section = f"\n🤖 تحليل الذكاء الاصطناعي:\n{ai_analysis}\n"
@@ -224,9 +259,9 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"""{emoji} {data['symbol']} ({data['interval'].upper()})
 💰 السعر: {data['price']:,.2f}
 🎯 التوصية: {data['action']} (Score: {data['score']})
-⚖️ العائد/المخاطرة: 1:{data['rr']:.2f}
+️ العائد/المخاطرة: 1:{data['rr']:.2f}
 
-📌 مستويات التداول:
+ مستويات التداول:
 🛑 SL: {data['sl']:,.2f}
 🎯 TP1: {data['tp1']:,.2f}
 🎯 TP2: {data['tp2']:,.2f}
@@ -237,7 +272,6 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg)
         
-        # تسجيل في Trade Logger
         if log_trade:
             try:
                 log_trade(
@@ -287,8 +321,14 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔗 {dashboard_url}/dashboard")
 
 def main():
-    logger.info("🧮 Starting bot with python-telegram-bot + Qwen AI...")
+    logger.info("🧮 Starting bot with Flask + Telegram Bot + Qwen AI...")
     
+    # ✅ تشغيل Flask في خيط منفصل
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("✅ Flask dashboard started")
+    
+    # ✅ تشغيل بوت Telegram
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start_command))
@@ -296,7 +336,7 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("dashboard", dashboard_command))
     
-    logger.info("✅ Bot started successfully!")
+    logger.info("✅ Telegram bot started!")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
