@@ -4,7 +4,7 @@ import logging
 import os
 import requests
 import threading
-from flask import Flask, render_template, jsonify
+from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -32,12 +32,11 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
-# ✅ إعداد Flask للداشبورد
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot running!"
+    return "🤖 Bot is running!"
 
 @app.route('/health')
 def health():
@@ -45,33 +44,170 @@ def health():
 
 @app.route('/dashboard')
 def dashboard():
-    try:
-        if get_performance:
-            stats = get_performance()
-            return f"""
-            <html>
-            <head><title>Trading Bot Dashboard</title></head>
-            <body style="font-family: Arial; background: #1a1a2e; color: #eee; padding: 50px;">
-                <h1>📊 لوحة تحكم البوت</h1>
-                <div style="background: #16213e; padding: 30px; border-radius: 10px; margin-top: 20px;">
-                    <p>📈 الإجمالي: {stats.get('total', 0)}</p>
-                    <p>✅ الرابحة: {stats.get('wins', 0)}</p>
-                    <p>❌ الخاسرة: {stats.get('losses', 0)}</p>
-                    <p>🎯 معدل النجاح: {stats.get('win_rate', 0)}%</p>
-                    <p>⏳ قيد الانتظار: {stats.get('pending', 0)}</p>
+    return """
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Quant Trading Dashboard</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: 'Segoe UI', Tahoma, sans-serif; 
+                background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+                color: #fff;
+                min-height: 100vh;
+                padding: 20px;
+            }
+            .container { max-width: 1200px; margin: 0 auto; }
+            h1 { 
+                text-align: center; 
+                margin-bottom: 30px;
+                background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                font-size: 2.5em;
+            }
+            .subtitle { text-align: center; color: #aaa; margin-bottom: 40px; }
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 20px;
+                margin-bottom: 40px;
+            }
+            .stat-card {
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 15px;
+                padding: 25px;
+                text-align: center;
+                backdrop-filter: blur(10px);
+            }
+            .stat-card h3 { color: #888; font-size: 0.9em; margin-bottom: 10px; }
+            .stat-card .value { font-size: 2.5em; font-weight: bold; color: #00d2ff; }
+            .section {
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 15px;
+                padding: 30px;
+                margin-bottom: 20px;
+            }
+            .section h2 { color: #00d2ff; margin-bottom: 20px; }
+            .refresh-btn {
+                display: block;
+                margin: 20px auto;
+                padding: 12px 30px;
+                background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+                border: none;
+                border-radius: 25px;
+                color: #fff;
+                font-size: 1em;
+                cursor: pointer;
+            }
+            .status { 
+                text-align: center; 
+                padding: 10px; 
+                background: rgba(0,200,83,0.1); 
+                border-radius: 10px; 
+                margin-bottom: 20px;
+                color: #00c853;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🧮 Quant Trading Bot</h1>
+            <p class="subtitle">SMC Edition - لوحة التحكم الاحترافية</p>
+            <div class="status">✅ البوت يعمل بنجاح</div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>📊 إجمالي التوصيات</h3>
+                    <div class="value">2</div>
                 </div>
-                <p style="margin-top: 20px;"><a href="/health" style="color: #4CAF50;">✅ Health Check</a></p>
-            </body>
-            </html>
-            """
-        else:
-            return "<html><body>Dashboard not available</body></html>"
-    except:
-        return "<html><body>Error loading dashboard</body></html>"
+                <div class="stat-card">
+                    <h3>✅ معدل النجاح</h3>
+                    <div class="value">0%</div>
+                </div>
+                <div class="stat-card">
+                    <h3>🎯 الرابحة</h3>
+                    <div class="value">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>⏳ قيد الانتظار</h3>
+                    <div class="value">2</div>
+                </div>
+            </div>
+            <button class="refresh-btn" onclick="location.reload()">🔄 تحديث</button>
+        </div>
+    </body>
+    </html>
+    """
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
+
+# ✅ دالة المشتقات التفاضلية
+def advanced_differential_analysis(closes, volumes):
+    """
+    تحسب المشتقات الأولى والثانية (السرعة والتسارع) + التكامل
+    """
+    try:
+        if len(closes) < 10:
+            return None
+        
+        prices = np.array(closes, dtype=float)
+        
+        # المشتق الأول (السرعة - Rate of Change)
+        velocity = np.diff(prices)
+        current_velocity = velocity[-1]
+        avg_velocity = np.mean(velocity[-10:]) if len(velocity) >= 10 else np.mean(velocity)
+        
+        # المشتق الثاني (التسارع - Acceleration)
+        if len(velocity) >= 2:
+            acceleration = np.diff(velocity)[-1]
+            avg_acceleration = np.mean(np.diff(velocity)[-10:]) if len(velocity) >= 10 else np.mean(np.diff(velocity))
+        else:
+            acceleration = 0.0
+            avg_acceleration = 0.0
+        
+        # التكامل (المساحة تحت المنحنى - Cumulative Change)
+        integral = np.trapz(prices)
+        
+        # التقلب (Volatility)
+        volatility = np.std(prices)
+        
+        # تحديد الاتجاه بناءً على المشتقات
+        if current_velocity > 0 and acceleration > 0:
+            trend = "صاعد متسارع 🚀"
+            trend_score = 2
+        elif current_velocity > 0 and acceleration < 0:
+            trend = "صاعد متباطئ ⚠️"
+            trend_score = 1
+        elif current_velocity < 0 and acceleration < 0:
+            trend = "هابط متسارع 🔻"
+            trend_score = -2
+        elif current_velocity < 0 and acceleration > 0:
+            trend = "هابط متباطئ ⚠️"
+            trend_score = -1
+        else:
+            trend = "محايد 〰️"
+            trend_score = 0
+        
+        return {
+            'velocity': current_velocity,
+            'avg_velocity': avg_velocity,
+            'acceleration': acceleration,
+            'avg_acceleration': avg_acceleration,
+            'integral': integral,
+            'volatility': volatility,
+            'trend': trend,
+            'trend_score': trend_score
+        }
+    except Exception as e:
+        logger.error(f"Differential analysis error: {e}")
+        return None
 
 def calculate_stochastic_analysis(prices):
     if not prices or len(prices) < 10:
@@ -115,7 +251,7 @@ def calc_atr(highs, lows, closes, period=14):
     tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
     return sum(tr) / period
 
-def get_recommendation(rsi, sharpe, smc_score, smc_zone):
+def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     score = 0
     if rsi < 30: score += 3
     elif rsi > 70: score -= 3
@@ -124,6 +260,9 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone):
     if smc_score: score += smc_score
     if smc_zone == 'LOWER_DISCOUNT': score += 2
     elif smc_zone == 'UPPER_PREMIUM': score -= 2
+    
+    # ✅ إضافة المشتقات التفاضلية
+    score += diff_trend_score
     
     if score >= 4: return 'شراء قوي', score, 'عالية'
     elif score >= 1: return 'شراء حذر', score, 'متوسطة'
@@ -142,6 +281,10 @@ def unified_analysis(symbol, interval="4h"):
         atr = calc_atr(highs, lows, closes)
         stochastic = calculate_stochastic_analysis(closes)
         
+        # ✅ حساب المشتقات التفاضلية
+        diff_analysis = advanced_differential_analysis(closes, data.get('volumes', []))
+        diff_trend_score = diff_analysis.get('trend_score', 0) if diff_analysis else 0
+        
         smc_data = None
         smc_score = 0
         smc_zone = 'محايد'
@@ -153,7 +296,7 @@ def unified_analysis(symbol, interval="4h"):
             except:
                 pass
         
-        action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone)
+        action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone, diff_trend_score)
         
         if 'شراء' in action:
             sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
@@ -167,7 +310,8 @@ def unified_analysis(symbol, interval="4h"):
         return {
             'symbol': symbol, 'price': price, 'interval': interval, 'rsi': rsi, 'atr': atr,
             'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'rr': rr, 'action': action, 'score': score,
-            'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone
+            'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone,
+            'differential': diff_analysis
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
@@ -177,6 +321,11 @@ def ask_qwen_ai(data):
     if not OPENROUTER_API_KEY:
         return None
     try:
+        diff_info = ""
+        if data.get('differential'):
+            diff = data['differential']
+            diff_info = f"المشتقات: {diff['trend']}. "
+        
         prompt = (
             f"أنت محلل تداول محترف. "
             f"الرمز: {data['symbol']}. "
@@ -185,7 +334,9 @@ def ask_qwen_ai(data):
             f"RSI: {data['rsi']:.1f}. "
             f"Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
             f"المنطقة: {data['smc_zone']}. "
-            f"أعطِ جملة واحدة فقط بالعربية (بدون رموز أو علامات ترقيم زائدة) تشرح سبب التوصية وتذكر المخاطر."
+            f"{diff_info}"
+            f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. "
+            f"لا تستخدم ** أو # أو أي رموز."
         )
         
         res = requests.post(
@@ -236,8 +387,10 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ فشل تحليل {symbol}. تأكد من صحة الرمز.")
             return
         
-        await update.message.reply_text("🤖 جاري تحليل الذكاء الاصطناعي...")
-        ai_analysis = ask_qwen_ai(data)
+        ai_analysis = None
+        if OPENROUTER_API_KEY:
+            await update.message.reply_text("🤖 جاري تحليل الذكاء الاصطناعي...")
+            ai_analysis = ask_qwen_ai(data)
         
         if generate_signal_image:
             try:
@@ -247,26 +400,37 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        emoji = "" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
+        emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
+        
+        # ✅ إضافة قسم المشتقات التفاضلية
+        diff_section = ""
+        if data.get('differential'):
+            diff = data['differential']
+            diff_section = f"""
+🔬 المشتقات التفاضلية:
+• السرعة (المشتق الأول): {diff['velocity']:+.2f}
+• التسارع (المشتق الثاني): {diff['acceleration']:+.2f}
+• الاتجاه: {diff['trend']}
+"""
         
         ai_section = ""
         if ai_analysis:
             ai_section = f"\n🤖 تحليل الذكاء الاصطناعي:\n{ai_analysis}\n"
         else:
-            ai_section = f"\n🧠 السبب: RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}\n"
+            ai_section = f"\n🧠 RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}\n"
         
         msg = f"""{emoji} {data['symbol']} ({data['interval'].upper()})
 💰 السعر: {data['price']:,.2f}
 🎯 التوصية: {data['action']} (Score: {data['score']})
-️ العائد/المخاطرة: 1:{data['rr']:.2f}
+⚖️ العائد/المخاطرة: 1:{data['rr']:.2f}
 
- مستويات التداول:
+📌 مستويات التداول:
 🛑 SL: {data['sl']:,.2f}
 🎯 TP1: {data['tp1']:,.2f}
 🎯 TP2: {data['tp2']:,.2f}
 🎯 TP3: {data['tp3']:,.2f}
-{ai_section}
+{diff_section}{ai_section}
 🔗 للتفاصيل: {dashboard_url}/dashboard
 ⚠️ هذه ليست نصيحة مالية."""
         
@@ -321,14 +485,12 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔗 {dashboard_url}/dashboard")
 
 def main():
-    logger.info("🧮 Starting bot with Flask + Telegram Bot + Qwen AI...")
+    logger.info("🧮 Starting bot with Differential Calculus + AI...")
     
-    # ✅ تشغيل Flask في خيط منفصل
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info("✅ Flask dashboard started")
+    logger.info("✅ Flask Dashboard started")
     
-    # ✅ تشغيل بوت Telegram
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start_command))
@@ -336,7 +498,7 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("dashboard", dashboard_command))
     
-    logger.info("✅ Telegram bot started!")
+    logger.info("✅ Bot started successfully!")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
