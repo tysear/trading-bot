@@ -2,6 +2,7 @@ import yfinance as yf
 import numpy as np
 import logging
 import os
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
 def calculate_stochastic_analysis(prices):
@@ -128,6 +130,54 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
+# ✅ دالة الذكاء الاصطناعي - جملة واحدة فقط
+def ask_qwen_ai(data):
+    if not OPENROUTER_API_KEY:
+        return None
+    try:
+        prompt = (
+            f"أنت محلل تداول محترف. "
+            f"الرمز: {data['symbol']}. "
+            f"السعر: {data['price']}. "
+            f"التوصية: {data['action']}. "
+            f"RSI: {data['rsi']:.1f}. "
+            f"Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
+            f"المنطقة: {data['smc_zone']}. "
+            f"أعطِ جملة واحدة فقط بالعربية (بدون رموز أو علامات ترقيم زائدة) تشرح سبب التوصية وتذكر المخاطر. "
+            f"لا تستخدم ** أو # أو أي رموز Markdown."
+        )
+        
+        res = requests.post(
+            OPENROUTER_API_URL,
+            json={
+                "model": "qwen/qwen-2.5-72b-instruct",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 150
+            },
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/tysear/trading-bot",
+                "X-Title": "Quant Trading Bot"
+            },
+            timeout=30
+        )
+        
+        if res.status_code == 200:
+            result = res.json()
+            if 'choices' in result and len(result['choices']) > 0:
+                analysis = result['choices'][0]['message']['content'].strip()
+                # تنظيف الرد من أي رموز Markdown
+                analysis = analysis.replace('**', '').replace('*', '').replace('#', '').replace('`', '')
+                # تقصير إذا كان طويلاً جداً
+                if len(analysis) > 200:
+                    analysis = analysis[:197] + "..."
+                return analysis
+    except Exception as e:
+        logger.error(f"Qwen AI error: {e}")
+    return None
+
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -147,6 +197,10 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ فشل تحليل {symbol}. تأكد من صحة الرمز.")
             return
         
+        # ✅ استدعاء الذكاء الاصطناعي
+        await update.message.reply_text("🤖 جاري تحليل الذكاء الاصطناعي...")
+        ai_analysis = ask_qwen_ai(data)
+        
         # إرسال صورة الإشارة
         if generate_signal_image:
             try:
@@ -156,9 +210,16 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Image error: {e}")
         
-        # إرسال التقرير المختصر (بدون Markdown)
+        # إرسال التقرير المختصر
         emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
+        
+        # بناء قسم الذكاء الاصطناعي
+        ai_section = ""
+        if ai_analysis:
+            ai_section = f"\n🤖 تحليل الذكاء الاصطناعي:\n{ai_analysis}\n"
+        else:
+            ai_section = f"\n🧠 السبب: RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}\n"
         
         msg = f"""{emoji} {data['symbol']} ({data['interval'].upper()})
 💰 السعر: {data['price']:,.2f}
@@ -170,15 +231,13 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🎯 TP1: {data['tp1']:,.2f}
 🎯 TP2: {data['tp2']:,.2f}
 🎯 TP3: {data['tp3']:,.2f}
-
-🧠 السبب: RSI: {data['rsi']:.1f} | Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f} | المنطقة: {data['smc_zone']}
-
+{ai_section}
 🔗 للتفاصيل: {dashboard_url}/dashboard
 ⚠️ هذه ليست نصيحة مالية."""
         
         await update.message.reply_text(msg)
         
-        # ✅ تسجيل في Trade Logger مع tp3
+        # تسجيل في Trade Logger
         if log_trade:
             try:
                 log_trade(
@@ -202,7 +261,7 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
     msg = f"""🌍 بوت التداول الكمي المتقدم
-معادلات تفاضلية + Stochastic Calculus + Smart Money
+معادلات تفاضلية + Stochastic Calculus + Smart Money + ذكاء اصطناعي
 
 الأوامر:
 /smart <رمز> [تايم_فريم]
@@ -228,7 +287,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔗 {dashboard_url}/dashboard")
 
 def main():
-    logger.info("🧮 Starting bot with python-telegram-bot...")
+    logger.info("🧮 Starting bot with python-telegram-bot + Qwen AI...")
     
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
