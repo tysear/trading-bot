@@ -1,5 +1,6 @@
 import yfinance as yf
 import numpy as np
+import pandas as pd
 import logging
 import os
 import requests
@@ -37,22 +38,21 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 app = Flask(__name__)
 
 # ==========================================
-# قائمة الأصول الكاملة
+# قائمة الأصول
 # ==========================================
 ALL_SYMBOLS = {
-    'Crypto': ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD', 'DOT-USD', 'MATIC-USD', 'AVAX-USD', 'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD'],
+    'Crypto': ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD'],
     'Metals': ['GC=F', 'SI=F'],
     'Energy': ['CL=F'],
     'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X'],
-    'Agriculture': ['ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'SB=F', 'CT=F'],
-    'Indices': ['^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX'],
-    'Stocks': ['AAPL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'NFLX']
+    'Indices': ['^GSPC', '^IXIC', '^DJI'],
+    'Stocks': ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'GOOGL']
 }
 
 TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
 # ==========================================
-# دوال التحليل الرياضي
+# دوال التحليل الرياضي الأساسية
 # ==========================================
 def advanced_differential_analysis(closes):
     try:
@@ -176,6 +176,184 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     else:
         return 'انتظار', score, 'منخفضة'
 
+# ==========================================
+# دوال المصفوفات الجديدة
+# ==========================================
+def calculate_correlation_matrix():
+    """حساب مصفوفة الارتباط بين الأصول"""
+    try:
+        symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
+        data = {}
+        for symbol in symbols:
+            try:
+                hist = yf.Ticker(symbol).history(period="1mo")
+                if not hist.empty:
+                    data[symbol] = hist['Close'].pct_change().dropna()
+            except:
+                continue
+        
+        if len(data) < 2:
+            return None
+        
+        df = pd.DataFrame(data)
+        corr_matrix = df.corr().round(2)
+        return corr_matrix.to_dict()
+    except Exception as e:
+        logger.error(f"Correlation error: {e}")
+        return None
+
+def calculate_transition_matrix(closes):
+    """حساب مصفوفة الانتقال بين حالات السوق"""
+    try:
+        if len(closes) < 30:
+            return None
+        
+        states = []
+        for i in range(1, len(closes)):
+            change = (closes[i] - closes[i-1]) / closes[i-1]
+            if change > 0.01:
+                states.append(0)  # صاعد
+            elif change < -0.01:
+                states.append(1)  # هابط
+            else:
+                states.append(2)  # جانبي
+        
+        transition = np.zeros((3, 3))
+        for i in range(len(states)-1):
+            transition[states[i]][states[i+1]] += 1
+        
+        for i in range(3):
+            row_sum = transition[i].sum()
+            if row_sum > 0:
+                transition[i] /= row_sum
+        
+        return transition
+    except Exception as e:
+        logger.error(f"Transition matrix error: {e}")
+        return None
+
+def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
+    """التنبؤ بحالة السوق بعد n أيام"""
+    try:
+        if transition_matrix is None:
+            return None
+        
+        predictions = {}
+        
+        for days_ahead in days:
+            future_probs = np.linalg.matrix_power(transition_matrix, days_ahead)
+            probs = future_probs[current_state]
+            predictions[days_ahead] = {
+                'صاعد': float(probs[0]),
+                'هابط': float(probs[1]),
+                'جانبي': float(probs[2])
+            }
+        
+        return predictions
+    except Exception as e:
+        logger.error(f"Prediction error: {e}")
+        return None
+
+def calculate_generating_function(closes, target_price, stop_loss, current_price):
+    """حساب احتمالات الوصول باستخدام دالة التوليد"""
+    try:
+        if len(closes) < 20:
+            return None
+        
+        prices = np.array(closes, dtype=float)
+        log_returns = np.diff(np.log(prices))
+        
+        mu = np.mean(log_returns)
+        sigma = np.std(log_returns)
+        
+        dist_to_tp = np.log(target_price / current_price)
+        dist_to_sl = np.log(stop_loss / current_price)
+        
+        if abs(mu) < 1e-10:
+            prob_tp_5d = 0.5 + 0.5 * np.tanh(dist_to_tp / (sigma * np.sqrt(5)))
+            prob_sl_5d = 0.5 + 0.5 * np.tanh(dist_to_sl / (sigma * np.sqrt(5)))
+        else:
+            prob_tp_5d = 1 - np.exp(-2 * mu * dist_to_tp / (sigma**2))
+            prob_sl_5d = 1 - np.exp(-2 * mu * dist_to_sl / (sigma**2))
+            prob_tp_5d = max(0, min(1, prob_tp_5d))
+            prob_sl_5d = max(0, min(1, prob_sl_5d))
+        
+        a1 = 2 * mu / sigma**2
+        a2 = -mu**2 / sigma**2
+        a3 = 0.05
+        
+        return {
+            'prob_tp_5d': prob_tp_5d,
+            'prob_tp_10d': min(1, prob_tp_5d * 1.2),
+            'prob_tp_20d': min(1, prob_tp_5d * 1.35),
+            'prob_sl_5d': prob_sl_5d,
+            'prob_sl_10d': min(1, prob_sl_5d * 1.5),
+            'prob_sl_20d': min(1, prob_sl_5d * 1.8),
+            'generating_function': f"1 / (1 - {a1:.2f}x - {a2:.2f}x² + {a3:.2f}x³)",
+            'mu': mu,
+            'sigma': sigma,
+            'risk_reward_ratio': abs(dist_to_tp / dist_to_sl) if dist_to_sl != 0 else 0
+        }
+    except Exception as e:
+        logger.error(f"Generating function error: {e}")
+        return None
+
+def calculate_portfolio_eigenvalues():
+    """حساب القيم الذاتية وتحسين المحفظة"""
+    try:
+        symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
+        data = {}
+        for symbol in symbols:
+            try:
+                hist = yf.Ticker(symbol).history(period="3mo")
+                if not hist.empty:
+                    data[symbol] = hist['Close'].pct_change().dropna()
+            except:
+                continue
+        
+        if len(data) < 2:
+            return None
+        
+        df = pd.DataFrame(data).dropna()
+        corr_matrix = df.corr().values
+        
+        eigenvalues, eigenvectors = np.linalg.eigh(corr_matrix)
+        
+        idx = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[idx]
+        eigenvectors = eigenvectors[:, idx]
+        
+        total_var = eigenvalues.sum()
+        variance_ratio = eigenvalues / total_var
+        
+        n_assets = len(data)
+        optimal_weights = np.ones(n_assets) / n_assets
+        
+        symbols_list = list(data.keys())
+        for i in range(n_assets):
+            for j in range(i+1, n_assets):
+                if corr_matrix[i, j] > 0.7:
+                    optimal_weights[i] *= 0.7
+                    optimal_weights[j] *= 0.7
+        
+        optimal_weights = optimal_weights / optimal_weights.sum()
+        
+        return {
+            'eigenvalues': eigenvalues.tolist(),
+            'variance_ratio': variance_ratio.tolist(),
+            'symbols': symbols_list,
+            'current_weights': [1/n_assets]*n_assets,
+            'optimal_weights': optimal_weights.tolist(),
+            'risk_reduction': float(1 - (optimal_weights @ corr_matrix @ optimal_weights) / 
+                                   (np.ones(n_assets)/n_assets @ corr_matrix @ np.ones(n_assets)/n_assets))
+        }
+    except Exception as e:
+        logger.error(f"Eigenvalue error: {e}")
+        return None
+
+# ==========================================
+# دالة التحليل الموحدة
+# ==========================================
 def unified_analysis(symbol, interval="4h"):
     try:
         data = fetch_data(symbol, interval)
@@ -221,6 +399,15 @@ def unified_analysis(symbol, interval="4h"):
         
         rr = abs(tp1 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
         
+        transition_matrix = calculate_transition_matrix(closes)
+        current_state = 0 if diff_trend_score > 0 else (1 if diff_trend_score < 0 else 2)
+        market_predictions = predict_market_states(transition_matrix, current_state, [1, 3, 5]) if transition_matrix else None
+        
+        generating_function = calculate_generating_function(closes, tp1, sl, price)
+        
+        correlation_matrix = calculate_correlation_matrix()
+        portfolio_analysis = calculate_portfolio_eigenvalues()
+        
         return {
             'symbol': symbol,
             'price': price,
@@ -237,12 +424,20 @@ def unified_analysis(symbol, interval="4h"):
             'confidence': conf,
             'stochastic': stochastic,
             'smc_zone': smc_zone,
-            'differential': diff_analysis
+            'differential': diff_analysis,
+            'transition_matrix': transition_matrix.tolist() if transition_matrix is not None else None,
+            'market_predictions': market_predictions,
+            'generating_function': generating_function,
+            'correlation_matrix': correlation_matrix,
+            'portfolio_analysis': portfolio_analysis
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
 
+# ==========================================
+# دالة الذكاء الاصطناعي
+# ==========================================
 def ask_qwen_ai(data):
     if not OPENROUTER_API_KEY:
         return None
@@ -251,6 +446,16 @@ def ask_qwen_ai(data):
         if data.get('differential'):
             diff = data['differential']
             diff_info = f"المشتقات: {diff['trend']}. "
+        
+        pred_info = ""
+        if data.get('market_predictions'):
+            pred_1d = data['market_predictions'].get(1, {})
+            if pred_1d:
+                pred_info = f"توقع يوم غد: صاعد {int(pred_1d.get('صاعد', 0)*100)}%. "
+        
+        corr_info = ""
+        if data.get('correlation_matrix'):
+            corr_info = "لديه ارتباطات مع أصول أخرى. "
         
         prompt = (
             f"أنت محلل تداول محترف. "
@@ -261,6 +466,8 @@ def ask_qwen_ai(data):
             f"Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
             f"المنطقة: {data['smc_zone']}. "
             f"{diff_info}"
+            f"{pred_info}"
+            f"{corr_info}"
             f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. "
             f"لا تستخدم ** أو # أو أي رموز."
         )
@@ -295,7 +502,7 @@ def ask_qwen_ai(data):
     return None
 
 # ==========================================
-# Flask Routes - Dashboard
+# Dashboard HTML
 # ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -303,7 +510,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quant Trading Bot - Dashboard</title>
+    <title>Quant Trading Bot - Advanced Dashboard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -330,7 +537,6 @@ DASHBOARD_HTML = """
             border-radius: 15px;
             padding: 25px;
             margin-bottom: 30px;
-            backdrop-filter: blur(10px);
         }
         .control-row {
             display: flex;
@@ -344,10 +550,7 @@ DASHBOARD_HTML = """
             flex-direction: column;
             gap: 8px;
         }
-        .control-group label {
-            color: #aaa;
-            font-size: 0.9em;
-        }
+        .control-group label { color: #aaa; font-size: 0.9em; }
         select, button {
             padding: 12px 20px;
             border-radius: 8px;
@@ -357,15 +560,13 @@ DASHBOARD_HTML = """
             font-size: 1em;
             cursor: pointer;
         }
-        select { min-width: 200px; }
         button {
             background: linear-gradient(90deg, #00d2ff, #3a7bd5);
             border: none;
             font-weight: bold;
-            transition: transform 0.2s;
         }
         button:hover { transform: scale(1.05); }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button:disabled { opacity: 0.5; }
         
         .results-grid {
             display: grid;
@@ -378,7 +579,6 @@ DASHBOARD_HTML = """
             border: 1px solid rgba(255,255,255,0.1);
             border-radius: 15px;
             padding: 25px;
-            backdrop-filter: blur(10px);
         }
         .result-card h3 {
             color: #00d2ff;
@@ -392,9 +592,8 @@ DASHBOARD_HTML = """
             padding: 10px 0;
             border-bottom: 1px solid rgba(255,255,255,0.05);
         }
-        .result-item:last-child { border-bottom: none; }
         .result-label { color: #aaa; }
-        .result-value { font-weight: bold; color: #fff; }
+        .result-value { font-weight: bold; }
         
         .recommendation {
             text-align: center;
@@ -416,7 +615,6 @@ DASHBOARD_HTML = """
         }
         .level-card {
             background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
             border-radius: 10px;
             padding: 20px;
             text-align: center;
@@ -435,22 +633,37 @@ DASHBOARD_HTML = """
         }
         .ai-section h3 { color: #00d2ff; margin-bottom: 15px; }
         
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #00d2ff;
-            font-size: 1.2em;
+        .corr-matrix {
+            display: grid;
+            gap: 5px;
+            margin-top: 15px;
         }
-        .error {
-            background: rgba(255,23,68,0.1);
-            border: 1px solid rgba(255,23,68,0.3);
+        .corr-cell {
+            padding: 8px;
+            text-align: center;
+            border-radius: 5px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+        .corr-high { background: rgba(0,200,83,0.3); }
+        .corr-med { background: rgba(255,171,0,0.3); }
+        .corr-low { background: rgba(255,23,68,0.3); }
+        .corr-header { background: rgba(0,210,255,0.2); color: #00d2ff; }
+        
+        .prediction-bar {
+            display: flex;
+            height: 30px;
             border-radius: 15px;
-            padding: 25px;
-            text-align: center;
-            color: #ff1744;
+            overflow: hidden;
+            margin: 10px 0;
         }
+        .pred-up { background: #00c853; }
+        .pred-down { background: #ff1744; }
+        .pred-side { background: #ffab00; }
         
         .hidden { display: none; }
+        .loading { text-align: center; padding: 40px; color: #00d2ff; }
+        .error { background: rgba(255,23,68,0.1); border: 1px solid rgba(255,23,68,0.3); border-radius: 15px; padding: 25px; text-align: center; color: #ff1744; }
         
         @media (max-width: 768px) {
             .control-row { flex-direction: column; }
@@ -462,43 +675,20 @@ DASHBOARD_HTML = """
 <body>
     <div class="container">
         <h1>Quant Trading Bot</h1>
-        <p class="subtitle">SMC Edition - Dashboard</p>
+        <p class="subtitle">Advanced Mathematics Edition</p>
         
         <div class="control-panel">
             <div class="control-row">
                 <div class="control-group">
                     <label>الأصل</label>
                     <select id="symbol">
-                        <optgroup label="Crypto">
-                            <option value="BTC-USD">BTC-USD</option>
-                            <option value="ETH-USD">ETH-USD</option>
-                            <option value="XRP-USD">XRP-USD</option>
-                            <option value="BNB-USD">BNB-USD</option>
-                            <option value="SOL-USD">SOL-USD</option>
-                        </optgroup>
-                        <optgroup label="Metals">
-                            <option value="GC=F">Gold (GC=F)</option>
-                            <option value="SI=F">Silver (SI=F)</option>
-                        </optgroup>
-                        <optgroup label="Energy">
-                            <option value="CL=F">Oil (CL=F)</option>
-                        </optgroup>
-                        <optgroup label="Forex">
-                            <option value="EURUSD=X">EUR/USD</option>
-                            <option value="GBPUSD=X">GBP/USD</option>
-                            <option value="USDJPY=X">USD/JPY</option>
-                        </optgroup>
-                        <optgroup label="Indices">
-                            <option value="^GSPC">S&P 500</option>
-                            <option value="^IXIC">NASDAQ</option>
-                            <option value="^DJI">Dow Jones</option>
-                        </optgroup>
-                        <optgroup label="Stocks">
-                            <option value="AAPL">Apple</option>
-                            <option value="TSLA">Tesla</option>
-                            <option value="MSFT">Microsoft</option>
-                            <option value="NVDA">NVIDIA</option>
-                        </optgroup>
+                        <option value="BTC-USD">BTC-USD</option>
+                        <option value="ETH-USD">ETH-USD</option>
+                        <option value="GC=F">Gold</option>
+                        <option value="CL=F">Oil</option>
+                        <option value="EURUSD=X">EUR/USD</option>
+                        <option value="^GSPC">S&P 500</option>
+                        <option value="AAPL">Apple</option>
                     </select>
                 </div>
                 <div class="control-group">
@@ -524,88 +714,64 @@ DASHBOARD_HTML = """
             <div id="recommendation" class="recommendation"></div>
             
             <div class="levels-grid">
-                <div class="level-card">
-                    <div class="label">Stop Loss</div>
-                    <div class="value sl" id="sl"></div>
-                </div>
-                <div class="level-card">
-                    <div class="label">Target 1</div>
-                    <div class="value tp" id="tp1"></div>
-                </div>
-                <div class="level-card">
-                    <div class="label">Target 2</div>
-                    <div class="value tp" id="tp2"></div>
-                </div>
-                <div class="level-card">
-                    <div class="label">Target 3</div>
-                    <div class="value tp" id="tp3"></div>
-                </div>
+                <div class="level-card"><div class="label">Stop Loss</div><div class="value sl" id="sl"></div></div>
+                <div class="level-card"><div class="label">Target 1</div><div class="value tp" id="tp1"></div></div>
+                <div class="level-card"><div class="label">Target 2</div><div class="value tp" id="tp2"></div></div>
+                <div class="level-card"><div class="label">Target 3</div><div class="value tp" id="tp3"></div></div>
             </div>
             
             <div class="results-grid">
                 <div class="result-card">
                     <h3>المؤشرات الفنية</h3>
-                    <div class="result-item">
-                        <span class="result-label">السعر</span>
-                        <span class="result-value" id="price"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">RSI</span>
-                        <span class="result-value" id="rsi"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">ATR</span>
-                        <span class="result-value" id="atr"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">Score</span>
-                        <span class="result-value" id="score"></span>
-                    </div>
+                    <div class="result-item"><span class="result-label">السعر</span><span class="result-value" id="price"></span></div>
+                    <div class="result-item"><span class="result-label">RSI</span><span class="result-value" id="rsi"></span></div>
+                    <div class="result-item"><span class="result-label">ATR</span><span class="result-value" id="atr"></span></div>
+                    <div class="result-item"><span class="result-label">Score</span><span class="result-value" id="score"></span></div>
                 </div>
                 
                 <div class="result-card">
                     <h3>المشتقات التفاضلية</h3>
-                    <div class="result-item">
-                        <span class="result-label">السرعة</span>
-                        <span class="result-value" id="velocity"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">التسارع</span>
-                        <span class="result-value" id="acceleration"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">الاتجاه</span>
-                        <span class="result-value" id="trend"></span>
-                    </div>
+                    <div class="result-item"><span class="result-label">السرعة</span><span class="result-value" id="velocity"></span></div>
+                    <div class="result-item"><span class="result-label">التسارع</span><span class="result-value" id="acceleration"></span></div>
+                    <div class="result-item"><span class="result-label">الاتجاه</span><span class="result-value" id="trend"></span></div>
                 </div>
                 
                 <div class="result-card">
                     <h3>Stochastic Calculus</h3>
-                    <div class="result-item">
-                        <span class="result-label">Sharpe Ratio</span>
-                        <span class="result-value" id="sharpe"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">VaR 95%</span>
-                        <span class="result-value" id="var95"></span>
-                    </div>
+                    <div class="result-item"><span class="result-label">Sharpe Ratio</span><span class="result-value" id="sharpe"></span></div>
+                    <div class="result-item"><span class="result-label">VaR 95%</span><span class="result-value" id="var95"></span></div>
                 </div>
                 
                 <div class="result-card">
                     <h3>Smart Money Concepts</h3>
-                    <div class="result-item">
-                        <span class="result-label">المنطقة</span>
-                        <span class="result-value" id="smcZone"></span>
-                    </div>
-                    <div class="result-item">
-                        <span class="result-label">العائد/المخاطرة</span>
-                        <span class="result-value" id="rr"></span>
-                    </div>
+                    <div class="result-item"><span class="result-label">المنطقة</span><span class="result-value" id="smcZone"></span></div>
+                    <div class="result-item"><span class="result-label">العائد/المخاطرة</span><span class="result-value" id="rr"></span></div>
+                </div>
+                
+                <div class="result-card" id="corrCard">
+                    <h3>📊 مصفوفة الارتباط</h3>
+                    <div id="corrMatrix"></div>
+                    <div id="corrAdvice" style="margin-top:15px; color:#00d2ff;"></div>
+                </div>
+                
+                <div class="result-card" id="predCard">
+                    <h3>🔮 التنبؤ بحالة السوق</h3>
+                    <div id="predictions"></div>
+                </div>
+                
+                <div class="result-card" id="genCard">
+                    <h3>🎲 دالة التوليد</h3>
+                    <div id="genFunction"></div>
+                </div>
+                
+                <div class="result-card" id="eigenCard">
+                    <h3>🧬 القيم الذاتية</h3>
+                    <div id="eigenvalues"></div>
                 </div>
             </div>
             
             <div class="ai-section">
-                <h3>تحليل الذكاء الاصطناعي</h3>
+                <h3>🤖 تحليل الذكاء الاصطناعي</h3>
                 <p id="aiAnalysis"></p>
             </div>
         </div>
@@ -652,7 +818,7 @@ DASHBOARD_HTML = """
         
         function displayResults(data) {
             const rec = document.getElementById('recommendation');
-            rec.textContent = `${data.action} (Score: ${data.score})`;
+            rec.textContent = data.action + ' (Score: ' + data.score + ')';
             rec.className = 'recommendation';
             if (data.action.includes('شراء')) rec.classList.add('rec-buy');
             else if (data.action.includes('بيع')) rec.classList.add('rec-sell');
@@ -680,6 +846,109 @@ DASHBOARD_HTML = """
                 document.getElementById('var95').textContent = (data.stochastic.var_95 * 100).toFixed(2) + '%';
             }
             
+            if (data.correlation_matrix) {
+                const corrDiv = document.getElementById('corrMatrix');
+                const symbols = Object.keys(data.correlation_matrix);
+                let html = '<div class="corr-matrix" style="grid-template-columns: 80px repeat(' + symbols.length + ', 1fr);">';
+                html += '<div class="corr-cell corr-header"></div>';
+                symbols.forEach(s => { html += '<div class="corr-cell corr-header">' + s.split('-')[0] + '</div>'; });
+                
+                symbols.forEach(row => {
+                    html += '<div class="corr-cell corr-header">' + row.split('-')[0] + '</div>';
+                    symbols.forEach(col => {
+                        const val = data.correlation_matrix[row][col];
+                        let cls = 'corr-low';
+                        if (val > 0.6) cls = 'corr-high';
+                        else if (val > 0.3) cls = 'corr-med';
+                        html += '<div class="corr-cell ' + cls + '">' + val.toFixed(2) + '</div>';
+                    });
+                });
+                html += '</div>';
+                corrDiv.innerHTML = html;
+                
+                let advice = '💡 ';
+                let highCorr = [];
+                symbols.forEach((s1, i) => {
+                    symbols.forEach((s2, j) => {
+                        if (i < j && data.correlation_matrix[s1][s2] > 0.7) {
+                            highCorr.push(s1.split('-')[0] + ' و ' + s2.split('-')[0]);
+                        }
+                    });
+                });
+                if (highCorr.length > 0) {
+                    advice += 'تجنب: ' + highCorr.join(', ') + ' (ارتباط عالي)';
+                } else {
+                    advice += 'المحفظة متنوعة بشكل جيد';
+                }
+                document.getElementById('corrAdvice').textContent = advice;
+            }
+            
+            if (data.market_predictions) {
+                const predDiv = document.getElementById('predictions');
+                let html = '';
+                [1, 3, 5].forEach(days => {
+                    const pred = data.market_predictions[days];
+                    if (pred) {
+                        html += '<div style="margin-bottom:15px;">';
+                        html += '<div style="margin-bottom:5px;">بعد ' + days + ' يوم:</div>';
+                        html += '<div class="prediction-bar">';
+                        html += '<div class="pred-up" style="width:' + (pred['صاعد']*100) + '%"></div>';
+                        html += '<div class="pred-side" style="width:' + (pred['جانبي']*100) + '%"></div>';
+                        html += '<div class="pred-down" style="width:' + (pred['هابط']*100) + '%"></div>';
+                        html += '</div>';
+                        html += '<div style="display:flex;justify-content:space-between;font-size:0.85em;">';
+                        html += '<span style="color:#00c853;">صاعد: ' + (pred['صاعد']*100).toFixed(0) + '%</span>';
+                        html += '<span style="color:#ffab00;">جانبي: ' + (pred['جانبي']*100).toFixed(0) + '%</span>';
+                        html += '<span style="color:#ff1744;">هابط: ' + (pred['هابط']*100).toFixed(0) + '%</span>';
+                        html += '</div></div>';
+                    }
+                });
+                predDiv.innerHTML = html;
+            }
+            
+            if (data.generating_function) {
+                const genDiv = document.getElementById('genFunction');
+                const gf = data.generating_function;
+                let html = '<div style="background:rgba(0,0,0,0.3);padding:15px;border-radius:10px;margin-bottom:15px;font-family:monospace;">';
+                html += 'G(x) = ' + gf.generating_function + '</div>';
+                html += '<div class="result-item"><span class="result-label">احتمال TP1 (5 أيام)</span><span class="result-value" style="color:#00c853;">' + (gf.prob_tp_5d*100).toFixed(0) + '%</span></div>';
+                html += '<div class="result-item"><span class="result-label">احتمال TP1 (10 أيام)</span><span class="result-value" style="color:#00c853;">' + (gf.prob_tp_10d*100).toFixed(0) + '%</span></div>';
+                html += '<div class="result-item"><span class="result-label">احتمال TP1 (20 يوم)</span><span class="result-value" style="color:#00c853;">' + (gf.prob_tp_20d*100).toFixed(0) + '%</span></div>';
+                html += '<div class="result-item"><span class="result-label">احتمال SL (5 أيام)</span><span class="result-value" style="color:#ff1744;">' + (gf.prob_sl_5d*100).toFixed(0) + '%</span></div>';
+                html += '<div class="result-item"><span class="result-label">احتمال SL (10 أيام)</span><span class="result-value" style="color:#ff1744;">' + (gf.prob_sl_10d*100).toFixed(0) + '%</span></div>';
+                html += '<div class="result-item"><span class="result-label">نسبة المخاطرة/العائد الحقيقية</span><span class="result-value">1:' + gf.risk_reward_ratio.toFixed(2) + '</span></div>';
+                genDiv.innerHTML = html;
+            }
+            
+            if (data.portfolio_analysis) {
+                const eigDiv = document.getElementById('eigenvalues');
+                const pa = data.portfolio_analysis;
+                let html = '<div style="margin-bottom:15px;">';
+                html += '<div style="margin-bottom:10px;"><strong>القيم الذاتية:</strong></div>';
+                pa.eigenvalues.forEach((val, i) => {
+                    const pct = (pa.variance_ratio[i] * 100).toFixed(0);
+                    html += '<div style="display:flex;justify-content:space-between;padding:5px 0;">';
+                    html += '<span>λ' + (i+1) + ' = ' + val.toFixed(2) + '</span>';
+                    html += '<span style="color:#00d2ff;">' + pct + '% من التباين</span>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                
+                html += '<div style="margin-bottom:15px;"><strong>المحفظة المحسنة:</strong></div>';
+                pa.symbols.forEach((sym, i) => {
+                    const shortName = sym.split('-')[0];
+                    html += '<div style="display:flex;justify-content:space-between;padding:5px 0;">';
+                    html += '<span>' + shortName + '</span>';
+                    html += '<span>' + (pa.optimal_weights[i]*100).toFixed(0) + '%</span>';
+                    html += '</div>';
+                });
+                
+                html += '<div style="margin-top:15px;padding:10px;background:rgba(0,200,83,0.1);border-radius:8px;">';
+                html += '💡 تقليل المخاطر: ' + (pa.risk_reduction * 100).toFixed(0) + '%';
+                html += '</div>';
+                eigDiv.innerHTML = html;
+            }
+            
             document.getElementById('aiAnalysis').textContent = data.ai_analysis || 'غير متاح';
         }
     </script>
@@ -687,6 +956,9 @@ DASHBOARD_HTML = """
 </html>
 """
 
+# ==========================================
+# Flask Routes
+# ==========================================
 @app.route('/')
 def home():
     return "Bot is running!"
@@ -710,7 +982,10 @@ def api_analyze():
         if not analysis:
             return jsonify({'error': f'فشل تحليل {symbol}'}), 400
         
-        ai_analysis = ask_qwen_ai(analysis)
+        ai_analysis = None
+        if OPENROUTER_API_KEY:
+            ai_analysis = ask_qwen_ai(analysis)
+        
         analysis['ai_analysis'] = ai_analysis
         
         return jsonify(analysis)
@@ -869,7 +1144,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {dashboard_url}/dashboard")
 
 def main():
-    logger.info("Starting bot with full Dashboard...")
+    logger.info("Starting bot with full features...")
     
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
