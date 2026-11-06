@@ -6,7 +6,6 @@ import requests
 import threading
 import time
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, jsonify, render_template_string, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -42,15 +41,6 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 
 CRYPTO_SYMBOLS = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD']
-ALL_SYMBOLS = {
-    'Crypto': CRYPTO_SYMBOLS,
-    'Metals': ['GC=F', 'SI=F'],
-    'Energy': ['CL=F'],
-    'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X'],
-    'Indices': ['^GSPC', '^IXIC', '^DJI'],
-    'Stocks': ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'GOOGL']
-}
-TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
 _data_cache = {}
 CACHE_DURATION = 3600
@@ -560,11 +550,7 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
-# ==========================================
-# ✅ دالة الذكاء الاصطناعي المُصلحة
-# ==========================================
 def ask_qwen_ai(data):
-    """دالة الذكاء الاصطناعي مع logging مفصّل"""
     logger.info(f"🤖 Starting AI analysis for {data.get('symbol', 'unknown')}")
     
     if not OPENROUTER_API_KEY:
@@ -624,9 +610,6 @@ def ask_qwen_ai(data):
     
     return None
 
-# ==========================================
-# Dashboard HTML
-# ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -690,13 +673,39 @@ DASHBOARD_HTML = """
                 <div class="control-group">
                     <label>الأصل</label>
                     <select id="symbol">
-                        <option value="BTC-USD">BTC-USD</option>
-                        <option value="ETH-USD">ETH-USD</option>
-                        <option value="GC=F">Gold</option>
-                        <option value="CL=F">Oil</option>
-                        <option value="EURUSD=X">EUR/USD</option>
-                        <option value="^GSPC">S&P 500</option>
-                        <option value="AAPL">Apple</option>
+                        <optgroup label="💰 Crypto">
+                            <option value="BTC-USD">BTC-USD (Bitcoin)</option>
+                            <option value="ETH-USD">ETH-USD (Ethereum)</option>
+                            <option value="XRP-USD">XRP-USD (Ripple)</option>
+                            <option value="BNB-USD">BNB-USD (Binance)</option>
+                            <option value="SOL-USD">SOL-USD (Solana)</option>
+                            <option value="ADA-USD">ADA-USD (Cardano)</option>
+                            <option value="DOGE-USD">DOGE-USD (Dogecoin)</option>
+                        </optgroup>
+                        <optgroup label="🥇 Metals">
+                            <option value="GC=F">Gold (GC=F)</option>
+                            <option value="SI=F">Silver (SI=F)</option>
+                        </optgroup>
+                        <optgroup label="⛽ Energy">
+                            <option value="CL=F">Oil (CL=F)</option>
+                        </optgroup>
+                        <optgroup label="💱 Forex">
+                            <option value="EURUSD=X">EUR/USD</option>
+                            <option value="GBPUSD=X">GBP/USD</option>
+                            <option value="USDJPY=X">USD/JPY</option>
+                        </optgroup>
+                        <optgroup label="📊 Indices">
+                            <option value="^GSPC">S&P 500</option>
+                            <option value="^IXIC">NASDAQ</option>
+                            <option value="^DJI">Dow Jones</option>
+                        </optgroup>
+                        <optgroup label="🏢 Stocks">
+                            <option value="AAPL">Apple</option>
+                            <option value="TSLA">Tesla</option>
+                            <option value="MSFT">Microsoft</option>
+                            <option value="NVDA">NVIDIA</option>
+                            <option value="GOOGL">Google</option>
+                        </optgroup>
                     </select>
                 </div>
                 <div class="control-group">
@@ -894,9 +903,6 @@ def health(): return jsonify({"status": "ok"})
 @app.route('/dashboard')
 def dashboard(): return render_template_string(DASHBOARD_HTML)
 
-# ==========================================
-# ✅ API endpoint المُصلح
-# ==========================================
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
     try:
@@ -910,7 +916,6 @@ def api_analyze():
         if not analysis:
             return jsonify({'error': f'فشل تحليل {symbol}'}), 400
         
-        # ✅ إصلاح: لا نخفي الأخطاء
         if OPENROUTER_API_KEY:
             logger.info("🤖 Attempting AI analysis...")
             try:
