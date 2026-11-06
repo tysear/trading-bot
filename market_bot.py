@@ -1,12 +1,12 @@
-import yfinance as yf
 import numpy as np
 import pandas as pd
 import logging
 import os
 import requests
 import threading
-import json
+import time
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, jsonify, render_template_string, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -29,16 +29,19 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ==========================================
+# المتغيرات
+# ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 
-app = Flask(__name__)
-
+CRYPTO_SYMBOLS = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD']
 ALL_SYMBOLS = {
-    'Crypto': ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD'],
+    'Crypto': CRYPTO_SYMBOLS,
     'Metals': ['GC=F', 'SI=F'],
     'Energy': ['CL=F'],
     'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X'],
@@ -47,19 +50,196 @@ ALL_SYMBOLS = {
 }
 TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
+# ==========================================
+# Caching System
+# ==========================================
+_data_cache = {}
+CACHE_DURATION = 3600
+
+def get_cached_data(key):
+    if key in _data_cache:
+        data, timestamp = _data_cache[key]
+        if time.time() - timestamp < CACHE_DURATION:
+            return data
+    return None
+
+def set_cached_data(key, data):
+    _data_cache[key] = (data, time.time())
+
+# ==========================================
+# Binance API (للكريبتو)
+# ==========================================
+def fetch_from_binance(symbol, interval="4h"):
+    try:
+        binance_symbol = symbol.replace('-USD', 'USDT')
+        interval_map = {'15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d'}
+        binance_interval = interval_map.get(interval, '4h')
+        
+        url = f"https://api.binance.com/api/v3/klines"
+        params = {"symbol": binance_symbol, "interval": binance_interval, "limit": 200}
+        
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        if not data or len(data) < 20:
+            return None
+        
+        closes = [float(k[4]) for k in data]
+        highs = [float(k[2]) for k in data]
+        lows = [float(k[3]) for k in data]
+        volumes = [float(k[5]) for k in data]
+        
+        return {'closes': closes, 'highs': highs, 'lows': lows, 'volumes': volumes}
+    except Exception as e:
+        logger.error(f"Binance error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# Twelve Data API (للباقي)
+# ==========================================
+def fetch_from_twelvedata(symbol, interval="4h"):
+    try:
+        if not TWELVE_DATA_API_KEY:
+            logger.warning("TWELVE_DATA_API_KEY not set")
+            return None
+        
+        td_symbol = symbol.replace('-USD', '/USD')
+        interval_map = {'15m': '15min', '1h': '1h', '4h': '4h', '1d': '1day'}
+        td_interval = interval_map.get(interval, '4h')
+        
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            "symbol": td_symbol,
+            "interval": td_interval,
+            "outputsize": 200,
+            "apikey": TWELVE_DATA_API_KEY,
+            "format": "JSON"
+        }
+        
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        if "status" in data and data["status"] == "error":
+            logger.warning(f"Twelve Data error for {symbol}: {data.get('message')}")
+            return None
+        
+        values = data.get("values", [])
+        if not values or len(values) < 20:
+            return None
+        
+        values.reverse()
+        
+        closes, highs, lows, volumes = [], [], [], []
+        for v in values:
+            try:
+                closes.append(float(v["close"]))
+                highs.append(float(v["high"]))
+                lows.append(float(v["low"]))
+                volumes.append(float(v.get("volume", 0)))
+            except:
+                continue
+        
+        if len(closes) < 20:
+            return None
+        
+        return {'closes': closes, 'highs': highs, 'lows': lows, 'volumes': volumes}
+    except Exception as e:
+        logger.error(f"Twelve Data error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# Finnhub Fallback
+# ==========================================
+def fetch_from_finnhub(symbol, interval="1d"):
+    try:
+        if not FINNHUB_API_KEY:
+            return None
+        
+        resolution_map = {'1d': 'D', '1wk': 'W', '1mo': 'M'}
+        resolution = resolution_map.get(interval, 'D')
+        
+        end_time = int(time.time())
+        start_time = end_time - (365 * 24 * 3600)
+        
+        url = f"https://finnhub.io/api/v1/stock/candle"
+        params = {
+            "symbol": symbol,
+            "resolution": resolution,
+            "from": start_time,
+            "to": end_time,
+            "token": FINNHUB_API_KEY
+        }
+        
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        if data.get("s") != "ok":
+            return None
+        
+        closes = data.get("c", [])
+        highs = data.get("h", [])
+        lows = data.get("l", [])
+        volumes = data.get("v", [])
+        
+        if len(closes) < 20:
+            return None
+        
+        return {'closes': closes, 'highs': highs, 'lows': lows, 'volumes': volumes}
+    except Exception as e:
+        logger.error(f"Finnhub error for {symbol}: {e}")
+        return None
+
+# ==========================================
+# الدالة الرئيسية
+# ==========================================
+def fetch_data(symbol, interval="4h"):
+    cache_key = f"{symbol}_{interval}"
+    cached = get_cached_data(cache_key)
+    if cached:
+        return cached
+    
+    if symbol in CRYPTO_SYMBOLS:
+        data = fetch_from_binance(symbol, interval)
+    else:
+        data = fetch_from_twelvedata(symbol, interval)
+    
+    if data is None and symbol not in CRYPTO_SYMBOLS:
+        logger.info(f"Trying Finnhub fallback for {symbol}")
+        data = fetch_from_finnhub(symbol, interval)
+    
+    if data:
+        set_cached_data(cache_key, data)
+    
+    return data
+
+# ==========================================
+# دوال التحليل الرياضي
+# ==========================================
 def advanced_differential_analysis(closes):
     try:
-        if not closes or len(closes) < 10: return None
+        if not closes or len(closes) < 10:
+            return None
         prices = np.array(closes[-20:], dtype=float)
         velocity = np.diff(prices)
         current_velocity = float(velocity[-1])
         acceleration = float(np.diff(velocity)[-1]) if len(velocity) >= 2 else 0.0
         
-        if current_velocity > 0 and acceleration > 0: trend, trend_score = "صاعد متسارع", 2
-        elif current_velocity > 0: trend, trend_score = "صاعد متباطئ", 1
-        elif current_velocity < 0 and acceleration < 0: trend, trend_score = "هابط متسارع", -2
-        elif current_velocity < 0: trend, trend_score = "هابط متباطئ", -1
-        else: trend, trend_score = "محايد", 0
+        if current_velocity > 0 and acceleration > 0:
+            trend, trend_score = "صاعد متسارع", 2
+        elif current_velocity > 0:
+            trend, trend_score = "صاعد متباطئ", 1
+        elif current_velocity < 0 and acceleration < 0:
+            trend, trend_score = "هابط متسارع", -2
+        elif current_velocity < 0:
+            trend, trend_score = "هابط متباطئ", -1
+        else:
+            trend, trend_score = "محايد", 0
         
         return {'velocity': current_velocity, 'acceleration': acceleration, 'trend': trend, 'trend_score': trend_score}
     except Exception as e:
@@ -68,7 +248,8 @@ def advanced_differential_analysis(closes):
 
 def calculate_stochastic_analysis(prices):
     try:
-        if not prices or len(prices) < 10: return {'sharpe_ratio': 0, 'var_95': 0}
+        if not prices or len(prices) < 10:
+            return {'sharpe_ratio': 0, 'var_95': 0}
         arr = np.array(prices, dtype=float)
         log_returns = np.diff(np.log(arr))
         daily_volatility = np.std(log_returns)
@@ -79,37 +260,25 @@ def calculate_stochastic_analysis(prices):
         logger.error(f"Stochastic error: {e}")
         return {'sharpe_ratio': 0, 'var_95': 0}
 
-def fetch_data(symbol, interval="4h"):
-    try:
-        period = "7d" if interval in ['1m', '5m'] else "1mo" if interval in ['15m', '30m'] else "6mo" if interval == '4h' else "1y"
-        hist = yf.Ticker(symbol).history(period=period, interval=interval)
-        if hist.empty: return None
-        closes = hist['Close'].tolist()
-        highs = hist['High'].tolist()
-        lows = hist['Low'].tolist()
-        volumes = hist['Volume'].tolist()
-        cleaned = [c for c in closes if c > 0 and not np.isnan(c)]
-        if len(cleaned) < 20: return None
-        return {'closes': cleaned, 'highs': highs[:len(cleaned)], 'lows': lows[:len(cleaned)], 'volumes': volumes[:len(cleaned)]}
-    except Exception as e:
-        logger.error(f"Fetch error: {e}")
-        return None
-
 def calc_rsi(prices, period=14):
     try:
-        if len(prices) < period + 1: return 50.0
+        if len(prices) < period + 1:
+            return 50.0
         gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
         losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
         avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
         return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
-    except: return 50.0
+    except:
+        return 50.0
 
 def calc_atr(highs, lows, closes, period=14):
     try:
-        if len(closes) < period + 1: return closes[-1] * 0.02
+        if len(closes) < period + 1:
+            return closes[-1] * 0.02
         tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
         return sum(tr) / period
-    except: return closes[-1] * 0.02
+    except:
+        return closes[-1] * 0.02
 
 def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     score = 0
@@ -128,36 +297,68 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     elif score <= -1: return 'بيع حذر', score, 'متوسطة'
     else: return 'انتظار', score, 'منخفضة'
 
+# ==========================================
+# مصفوفة الارتباط (ThreadPool)
+# ==========================================
 def calculate_correlation_matrix():
     try:
+        cache_key = 'correlation_matrix'
+        cached = get_cached_data(cache_key)
+        if cached:
+            return cached
+        
         symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
         data = {}
-        for symbol in symbols:
-            try:
-                hist = yf.Ticker(symbol).history(period="1mo")
-                if not hist.empty and len(hist) >= 10: data[symbol] = hist['Close'].pct_change().dropna()
-            except: continue
-        if len(data) < 2: return None
-        df = pd.DataFrame(data).dropna()
-        if df.empty: return None
-        return df.corr().round(2).to_dict()
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {executor.submit(fetch_data, symbol, '1d'): symbol for symbol in symbols}
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    result = future.result()
+                    if result and len(result['closes']) >= 20:
+                        data[symbol] = result['closes']
+                        logger.info(f"✅ Got data for {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Failed for {symbol}: {e}")
+        
+        if len(data) < 2:
+            return None
+        
+        df = pd.DataFrame(data)
+        corr_matrix = df.pct_change().dropna().corr().round(2)
+        result = corr_matrix.to_dict()
+        
+        set_cached_data(cache_key, result)
+        logger.info(f"✅ Correlation matrix calculated for {len(data)} assets")
+        return result
     except Exception as e:
         logger.error(f"Correlation error: {e}")
         return None
 
+# ==========================================
+# مصفوفة الانتقال
+# ==========================================
 def calculate_transition_matrix(closes):
     try:
-        if len(closes) < 30: return None
+        if len(closes) < 30:
+            return None
+        
         states = []
         for i in range(1, len(closes)):
             change = (closes[i] - closes[i-1]) / closes[i-1]
             if change > 0.01: states.append(0)
             elif change < -0.01: states.append(1)
             else: states.append(2)
+        
         transition = np.zeros((3, 3))
-        for i in range(len(states)-1): transition[states[i]][states[i+1]] += 1
+        for i in range(len(states)-1):
+            transition[states[i]][states[i+1]] += 1
+        
         for i in range(3):
-            if transition[i].sum() > 0: transition[i] /= transition[i].sum()
+            if transition[i].sum() > 0:
+                transition[i] /= transition[i].sum()
+        
         return transition
     except Exception as e:
         logger.error(f"Transition matrix error: {e}")
@@ -165,7 +366,8 @@ def calculate_transition_matrix(closes):
 
 def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
     try:
-        if transition_matrix is None: return None
+        if transition_matrix is None:
+            return None
         predictions = {}
         for days_ahead in days:
             future_probs = np.linalg.matrix_power(transition_matrix, days_ahead)
@@ -176,14 +378,21 @@ def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
         logger.error(f"Prediction error: {e}")
         return None
 
+# ==========================================
+# دالة التوليد
+# ==========================================
 def calculate_generating_function(closes, target_price, stop_loss, current_price):
     try:
-        if len(closes) < 20: return None
+        if len(closes) < 20:
+            return None
         prices = np.array(closes, dtype=float)
         log_returns = np.diff(np.log(prices))
         mu, sigma = float(np.mean(log_returns)), float(np.std(log_returns))
-        if sigma < 1e-10: return None
-        dist_to_tp, dist_to_sl = np.log(target_price / current_price), np.log(stop_loss / current_price)
+        if sigma < 1e-10:
+            return None
+        
+        dist_to_tp = np.log(target_price / current_price)
+        dist_to_sl = np.log(stop_loss / current_price)
         
         if abs(mu) < 1e-10:
             prob_tp_5d = 0.5 + 0.5 * np.tanh(dist_to_tp / (sigma * np.sqrt(5)))
@@ -191,11 +400,14 @@ def calculate_generating_function(closes, target_price, stop_loss, current_price
         else:
             prob_tp_5d = max(0.01, min(0.99, 1 - np.exp(-2 * mu * dist_to_tp / (sigma**2))))
             prob_sl_5d = max(0.01, min(0.99, 1 - np.exp(-2 * mu * dist_to_sl / (sigma**2))))
-            
+        
         return {
-            'prob_tp_5d': float(prob_tp_5d), 'prob_tp_10d': float(min(0.99, prob_tp_5d * 1.2)),
-            'prob_tp_20d': float(min(0.99, prob_tp_5d * 1.35)), 'prob_sl_5d': float(prob_sl_5d),
-            'prob_sl_10d': float(min(0.99, prob_sl_5d * 1.5)), 'prob_sl_20d': float(min(0.99, prob_sl_5d * 1.8)),
+            'prob_tp_5d': float(prob_tp_5d),
+            'prob_tp_10d': float(min(0.99, prob_tp_5d * 1.2)),
+            'prob_tp_20d': float(min(0.99, prob_tp_5d * 1.35)),
+            'prob_sl_5d': float(prob_sl_5d),
+            'prob_sl_10d': float(min(0.99, prob_sl_5d * 1.5)),
+            'prob_sl_20d': float(min(0.99, prob_sl_5d * 1.8)),
             'generating_function': f"1 / (1 - {2*mu/sigma**2:.2f}x - {-mu**2/sigma**2:.2f}x² + 0.05x³)",
             'risk_reward_ratio': float(abs(dist_to_tp / dist_to_sl)) if abs(dist_to_sl) > 1e-10 else 1.0
         }
@@ -203,45 +415,90 @@ def calculate_generating_function(closes, target_price, stop_loss, current_price
         logger.error(f"Generating function error: {e}")
         return None
 
+# ==========================================
+# القيم الذاتية (ThreadPool)
+# ==========================================
 def calculate_portfolio_eigenvalues():
     try:
+        cache_key = 'portfolio_eigenvalues'
+        cached = get_cached_data(cache_key)
+        if cached:
+            return cached
+        
         symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
         data = {}
-        for symbol in symbols:
-            try:
-                hist = yf.Ticker(symbol).history(period="3mo")
-                if not hist.empty and len(hist) >= 20: data[symbol] = hist['Close'].pct_change().dropna()
-            except: continue
-        if len(data) < 2: return None
-        df = pd.DataFrame(data).dropna()
-        if df.empty or len(df) < 10: return None
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {executor.submit(fetch_data, symbol, '1d'): symbol for symbol in symbols}
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    result = future.result()
+                    if result and len(result['closes']) >= 30:
+                        data[symbol] = result['closes']
+                        logger.info(f"✅ Got data for {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Failed for {symbol}: {e}")
+        
+        if len(data) < 2:
+            return None
+        
+        df = pd.DataFrame(data).pct_change().dropna()
+        if df.empty or len(df) < 10:
+            return None
+        
         corr_matrix = df.corr().values
         eigenvalues, eigenvectors = np.linalg.eigh(corr_matrix)
+        
         idx = np.argsort(eigenvalues)[::-1]
-        eigenvalues, variance_ratio = eigenvalues[idx], eigenvalues[idx] / eigenvalues.sum()
+        eigenvalues = eigenvalues[idx]
+        
+        total_var = eigenvalues.sum()
+        if total_var < 1e-10:
+            return None
+        variance_ratio = eigenvalues / total_var
+        
         n_assets = len(data)
         optimal_weights = np.ones(n_assets) / n_assets
         symbols_list = list(data.keys())
+        
         for i in range(n_assets):
             for j in range(i+1, n_assets):
-                if corr_matrix[i, j] > 0.7: optimal_weights[i] *= 0.7; optimal_weights[j] *= 0.7
+                if corr_matrix[i, j] > 0.7:
+                    optimal_weights[i] *= 0.7
+                    optimal_weights[j] *= 0.7
+        
         optimal_weights = optimal_weights / optimal_weights.sum()
+        
         current_var = (np.ones(n_assets)/n_assets) @ corr_matrix @ (np.ones(n_assets)/n_assets)
         optimal_var = optimal_weights @ corr_matrix @ optimal_weights
-        return {
-            'eigenvalues': [float(x) for x in eigenvalues], 'variance_ratio': [float(x) for x in variance_ratio],
-            'symbols': symbols_list, 'current_weights': [1/n_assets]*n_assets,
+        risk_reduction = float(1 - optimal_var / current_var) if current_var > 0 else 0
+        
+        result = {
+            'eigenvalues': [float(x) for x in eigenvalues],
+            'variance_ratio': [float(x) for x in variance_ratio],
+            'symbols': symbols_list,
+            'current_weights': [1/n_assets]*n_assets,
             'optimal_weights': [float(x) for x in optimal_weights],
-            'risk_reduction': float(1 - optimal_var / current_var) if current_var > 0 else 0
+            'risk_reduction': risk_reduction
         }
+        
+        set_cached_data(cache_key, result)
+        logger.info(f"✅ Portfolio eigenvalues calculated")
+        return result
     except Exception as e:
         logger.error(f"Eigenvalue error: {e}")
         return None
 
+# ==========================================
+# التحليل الموحّد
+# ==========================================
 def unified_analysis(symbol, interval="4h"):
     try:
         data = fetch_data(symbol, interval)
-        if not data: return None
+        if not data:
+            return None
+        
         closes, highs, lows = data['closes'], data['highs'], data['lows']
         price = float(closes[-1])
         rsi, atr = calc_rsi(closes), calc_atr(highs, lows, closes)
@@ -255,22 +512,29 @@ def unified_analysis(symbol, interval="4h"):
                 smc_data = get_smc_analysis(closes, highs, lows, data.get('volumes', []))
                 smc_score = smc_data.get('score', 0)
                 smc_zone = smc_data.get('premium_discount', {}).get('zone', 'محايد')
-            except: pass
+            except:
+                pass
         
         action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone, diff_trend_score)
         
-        if 'شراء' in action: sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
-        elif 'بيع' in action: sl, tp1, tp2, tp3 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5), price - (atr * 3.5)
-        else: sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
+        if 'شراء' in action:
+            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
+        elif 'بيع' in action:
+            sl, tp1, tp2, tp3 = price + (atr * 0.8), price - (atr * 1.5), price - (atr * 2.5), price - (atr * 3.5)
+        else:
+            sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
         
         rr = abs(tp1 - price) / abs(price - sl) if abs(price - sl) > 0 else 0
         
         result = {
-            'symbol': symbol, 'price': float(price), 'interval': interval, 'rsi': float(rsi), 'atr': float(atr),
-            'sl': float(sl), 'tp1': float(tp1), 'tp2': float(tp2), 'tp3': float(tp3), 'rr': float(rr),
-            'action': action, 'score': int(score), 'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone,
-            'differential': diff_analysis, 'transition_matrix': None, 'market_predictions': None,
-            'generating_function': None, 'correlation_matrix': None, 'portfolio_analysis': None
+            'symbol': symbol, 'price': float(price), 'interval': interval,
+            'rsi': float(rsi), 'atr': float(atr), 'sl': float(sl),
+            'tp1': float(tp1), 'tp2': float(tp2), 'tp3': float(tp3),
+            'rr': float(rr), 'action': action, 'score': int(score),
+            'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone,
+            'differential': diff_analysis, 'transition_matrix': None,
+            'market_predictions': None, 'generating_function': None,
+            'correlation_matrix': None, 'portfolio_analysis': None
         }
         
         try:
@@ -281,11 +545,16 @@ def unified_analysis(symbol, interval="4h"):
                 result['market_predictions'] = predict_market_states(tm, cs, [1, 3, 5])
         except: pass
         
-        try: result['generating_function'] = calculate_generating_function(closes, tp1, sl, price)
+        try:
+            result['generating_function'] = calculate_generating_function(closes, tp1, sl, price)
         except: pass
-        try: result['correlation_matrix'] = calculate_correlation_matrix()
+        
+        try:
+            result['correlation_matrix'] = calculate_correlation_matrix()
         except: pass
-        try: result['portfolio_analysis'] = calculate_portfolio_eigenvalues()
+        
+        try:
+            result['portfolio_analysis'] = calculate_portfolio_eigenvalues()
         except: pass
         
         return result
@@ -293,11 +562,17 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
+# ==========================================
+# الذكاء الاصطناعي
+# ==========================================
 def ask_qwen_ai(data):
-    if not OPENROUTER_API_KEY: return None
+    if not OPENROUTER_API_KEY:
+        return None
     try:
         diff_info = f"المشتقات: {data['differential']['trend']}. " if data.get('differential') else ""
-        pred_info = f"توقع غد: صاعد {int(data['market_predictions'][1].get('صاعد', 0)*100)}%. " if data.get('market_predictions') and 1 in data['market_predictions'] else ""
+        pred_info = ""
+        if data.get('market_predictions') and 1 in data['market_predictions']:
+            pred_info = f"توقع غد: صاعد {int(data['market_predictions'][1].get('صاعد', 0)*100)}%. "
         
         prompt = (f"أنت محلل تداول محترف. الرمز: {data['symbol']}. السعر: {data['price']}. "
                   f"التوصية: {data['action']}. RSI: {data['rsi']:.1f}. Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
@@ -305,7 +580,8 @@ def ask_qwen_ai(data):
                   f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. لا تستخدم ** أو # أو أي رموز.")
         
         res = requests.post(OPENROUTER_API_URL, json={
-            "model": "qwen/qwen-2.5-72b-instruct", "messages": [{"role": "user", "content": prompt}],
+            "model": "qwen/qwen-2.5-72b-instruct",
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2, "max_tokens": 150
         }, headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}, timeout=30)
         
@@ -318,6 +594,9 @@ def ask_qwen_ai(data):
         logger.error(f"Qwen AI error: {e}")
     return None
 
+# ==========================================
+# Dashboard HTML (نفس السابق - مختصر للوضوح)
+# ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -575,6 +854,11 @@ DASHBOARD_HTML = """
 </html>
 """
 
+# ==========================================
+# Flask Routes
+# ==========================================
+app = Flask(__name__)
+
 @app.route('/')
 def home(): return "Bot is running!"
 
@@ -602,6 +886,9 @@ def run_flask():
     try: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
     except Exception as e: logger.error(f"Flask error: {e}")
 
+# ==========================================
+# Telegram Bot
+# ==========================================
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -628,7 +915,6 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_photo(photo=BytesIO(generate_signal_image(data)), caption=f"{symbol}")
             except: pass
         
-        # ✅ تم إصلاح الإيموجي هنا
         emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
@@ -665,7 +951,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
 
 def main():
-    logger.info("Starting bot...")
+    logger.info("Starting bot with Twelve Data + Binance APIs...")
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask started")
     
