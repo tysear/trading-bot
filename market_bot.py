@@ -323,18 +323,20 @@ def calculate_correlation_matrix():
         symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
         data = {}
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_symbol = {executor.submit(fetch_data, symbol, '1d'): symbol for symbol in symbols}
-            for future in as_completed(future_to_symbol):
-                symbol = future_to_symbol[future]
-                try:
-                    result = future.result()
-                    if result and len(result['closes']) >= 20:
-                        data[symbol] = result['closes']
-                except:
-                    pass
+        for symbol in symbols:
+            try:
+                logger.info(f"🔄 Fetching {symbol} for correlation...")
+                result = fetch_data(symbol, '1d')
+                if result and len(result['closes']) >= 20:
+                    data[symbol] = result['closes']
+                    logger.info(f"✅ Got {symbol} ({len(result['closes'])} candles)")
+                else:
+                    logger.warning(f"⚠️ Failed for {symbol}")
+            except Exception as e:
+                logger.error(f"❌ Error for {symbol}: {e}")
         
         if len(data) < 2:
+            logger.warning(f"Only {len(data)} assets available")
             return None
         
         df = pd.DataFrame(data)
@@ -342,6 +344,7 @@ def calculate_correlation_matrix():
         result = corr_matrix.to_dict()
         
         set_cached_data(cache_key, result)
+        logger.info(f"✅ Correlation matrix ready for {len(data)} assets")
         return result
     except Exception as e:
         logger.error(f"Correlation error: {e}")
@@ -427,16 +430,17 @@ def calculate_portfolio_eigenvalues():
         symbols = ['BTC-USD', 'ETH-USD', 'GC=F', 'CL=F', '^GSPC']
         data = {}
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_symbol = {executor.submit(fetch_data, symbol, '1d'): symbol for symbol in symbols}
-            for future in as_completed(future_to_symbol):
-                symbol = future_to_symbol[future]
-                try:
-                    result = future.result()
-                    if result and len(result['closes']) >= 30:
-                        data[symbol] = result['closes']
-                except:
-                    pass
+        for symbol in symbols:
+            try:
+                logger.info(f"🔄 Fetching {symbol} for eigenvalues...")
+                result = fetch_data(symbol, '1d')
+                if result and len(result['closes']) >= 30:
+                    data[symbol] = result['closes']
+                    logger.info(f"✅ Got {symbol}")
+                else:
+                    logger.warning(f"⚠️ Failed for {symbol}")
+            except Exception as e:
+                logger.error(f"❌ Error for {symbol}: {e}")
         
         if len(data) < 2:
             return None
@@ -482,6 +486,7 @@ def calculate_portfolio_eigenvalues():
         }
         
         set_cached_data(cache_key, result)
+        logger.info(f"✅ Portfolio eigenvalues calculated")
         return result
     except:
         return None
@@ -555,9 +560,19 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
+# ==========================================
+# ✅ دالة الذكاء الاصطناعي المُصلحة
+# ==========================================
 def ask_qwen_ai(data):
+    """دالة الذكاء الاصطناعي مع logging مفصّل"""
+    logger.info(f"🤖 Starting AI analysis for {data.get('symbol', 'unknown')}")
+    
     if not OPENROUTER_API_KEY:
+        logger.error("❌ OPENROUTER_API_KEY is not set!")
         return None
+    
+    logger.info(f"✅ OPENROUTER_API_KEY found (length: {len(OPENROUTER_API_KEY)})")
+    
     try:
         diff_info = f"المشتقات: {data['differential']['trend']}. " if data.get('differential') else ""
         pred_info = ""
@@ -569,21 +584,49 @@ def ask_qwen_ai(data):
                   f"المنطقة: {data['smc_zone']}. {diff_info}{pred_info} "
                   f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. لا تستخدم ** أو # أو أي رموز.")
         
-        res = requests.post(OPENROUTER_API_URL, json={
-            "model": "qwen/qwen-2.5-72b-instruct",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2, "max_tokens": 150
-        }, headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}, timeout=30)
+        logger.info(f"📤 Sending request to OpenRouter...")
+        
+        res = requests.post(
+            OPENROUTER_API_URL,
+            json={
+                "model": "qwen/qwen-2.5-72b-instruct",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 150
+            },
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+        
+        logger.info(f"📥 Response status: {res.status_code}")
         
         if res.status_code == 200:
             result = res.json()
             if 'choices' in result and len(result['choices']) > 0:
-                analysis = result['choices'][0]['message']['content'].strip().replace('**', '').replace('*', '').replace('#', '').replace('`', '')
+                analysis = result['choices'][0]['message']['content'].strip()
+                analysis = analysis.replace('**', '').replace('*', '').replace('#', '').replace('`', '')
+                logger.info(f"✅ AI analysis received: {analysis[:50]}...")
                 return analysis[:197] + "..." if len(analysis) > 200 else analysis
-    except:
-        pass
+            else:
+                logger.error(f"❌ No choices in response: {result}")
+        else:
+            logger.error(f"❌ API returned status {res.status_code}: {res.text[:200]}")
+            
+    except requests.exceptions.Timeout:
+        logger.error("❌ Request timed out")
+    except requests.exceptions.ConnectionError:
+        logger.error("❌ Connection error")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+    
     return None
 
+# ==========================================
+# Dashboard HTML
+# ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -851,6 +894,9 @@ def health(): return jsonify({"status": "ok"})
 @app.route('/dashboard')
 def dashboard(): return render_template_string(DASHBOARD_HTML)
 
+# ==========================================
+# ✅ API endpoint المُصلح
+# ==========================================
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
     try:
@@ -864,11 +910,22 @@ def api_analyze():
         if not analysis:
             return jsonify({'error': f'فشل تحليل {symbol}'}), 400
         
+        # ✅ إصلاح: لا نخفي الأخطاء
         if OPENROUTER_API_KEY:
+            logger.info("🤖 Attempting AI analysis...")
             try:
-                analysis['ai_analysis'] = ask_qwen_ai(analysis)
-            except:
-                pass
+                ai_result = ask_qwen_ai(analysis)
+                analysis['ai_analysis'] = ai_result
+                if ai_result:
+                    logger.info("✅ AI analysis added successfully")
+                else:
+                    logger.warning("⚠️ AI analysis returned None")
+            except Exception as e:
+                logger.error(f"❌ AI analysis failed: {e}")
+                analysis['ai_analysis'] = None
+        else:
+            logger.warning("⚠️ OPENROUTER_API_KEY not set, skipping AI")
+            analysis['ai_analysis'] = None
         
         return jsonify(analysis)
     except Exception as e:
