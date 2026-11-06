@@ -29,9 +29,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ==========================================
-# المتغيرات
-# ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -50,9 +47,6 @@ ALL_SYMBOLS = {
 }
 TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
-# ==========================================
-# Caching System
-# ==========================================
 _data_cache = {}
 CACHE_DURATION = 3600
 
@@ -66,9 +60,6 @@ def get_cached_data(key):
 def set_cached_data(key, data):
     _data_cache[key] = (data, time.time())
 
-# ==========================================
-# Binance API (للكريبتو)
-# ==========================================
 def fetch_from_binance(symbol, interval="4h"):
     try:
         binance_symbol = symbol.replace('-USD', 'USDT')
@@ -96,9 +87,6 @@ def fetch_from_binance(symbol, interval="4h"):
         logger.error(f"Binance error for {symbol}: {e}")
         return None
 
-# ==========================================
-# Twelve Data API (للباقي)
-# ==========================================
 def fetch_from_twelvedata(symbol, interval="4h"):
     try:
         if not TWELVE_DATA_API_KEY:
@@ -151,9 +139,6 @@ def fetch_from_twelvedata(symbol, interval="4h"):
         logger.error(f"Twelve Data error for {symbol}: {e}")
         return None
 
-# ==========================================
-# Finnhub Fallback
-# ==========================================
 def fetch_from_finnhub(symbol, interval="1d"):
     try:
         if not FINNHUB_API_KEY:
@@ -195,32 +180,35 @@ def fetch_from_finnhub(symbol, interval="1d"):
         logger.error(f"Finnhub error for {symbol}: {e}")
         return None
 
-# ==========================================
-# الدالة الرئيسية
-# ==========================================
 def fetch_data(symbol, interval="4h"):
     cache_key = f"{symbol}_{interval}"
     cached = get_cached_data(cache_key)
     if cached:
+        logger.info(f"Using cached data for {symbol}")
         return cached
     
+    data = None
+    
     if symbol in CRYPTO_SYMBOLS:
+        logger.info(f"Trying Binance for {symbol}")
         data = fetch_from_binance(symbol, interval)
-    else:
+    
+    if data is None and TWELVE_DATA_API_KEY:
+        logger.info(f"Trying Twelve Data for {symbol}")
         data = fetch_from_twelvedata(symbol, interval)
     
-    if data is None and symbol not in CRYPTO_SYMBOLS:
-        logger.info(f"Trying Finnhub fallback for {symbol}")
+    if data is None and FINNHUB_API_KEY and symbol not in CRYPTO_SYMBOLS:
+        logger.info(f"Trying Finnhub for {symbol}")
         data = fetch_from_finnhub(symbol, interval)
     
     if data:
         set_cached_data(cache_key, data)
+        logger.info(f"Data fetched for {symbol} ({len(data['closes'])} candles)")
+    else:
+        logger.error(f"All API sources failed for {symbol}")
     
     return data
 
-# ==========================================
-# دوال التحليل الرياضي
-# ==========================================
 def advanced_differential_analysis(closes):
     try:
         if not closes or len(closes) < 10:
@@ -297,9 +285,6 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     elif score <= -1: return 'بيع حذر', score, 'متوسطة'
     else: return 'انتظار', score, 'منخفضة'
 
-# ==========================================
-# مصفوفة الارتباط (ThreadPool)
-# ==========================================
 def calculate_correlation_matrix():
     try:
         cache_key = 'correlation_matrix'
@@ -318,9 +303,9 @@ def calculate_correlation_matrix():
                     result = future.result()
                     if result and len(result['closes']) >= 20:
                         data[symbol] = result['closes']
-                        logger.info(f"✅ Got data for {symbol}")
+                        logger.info(f"Got data for {symbol}")
                 except Exception as e:
-                    logger.error(f"❌ Failed for {symbol}: {e}")
+                    logger.error(f"Failed for {symbol}: {e}")
         
         if len(data) < 2:
             return None
@@ -330,15 +315,12 @@ def calculate_correlation_matrix():
         result = corr_matrix.to_dict()
         
         set_cached_data(cache_key, result)
-        logger.info(f"✅ Correlation matrix calculated for {len(data)} assets")
+        logger.info(f"Correlation matrix calculated for {len(data)} assets")
         return result
     except Exception as e:
         logger.error(f"Correlation error: {e}")
         return None
 
-# ==========================================
-# مصفوفة الانتقال
-# ==========================================
 def calculate_transition_matrix(closes):
     try:
         if len(closes) < 30:
@@ -378,9 +360,6 @@ def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
         logger.error(f"Prediction error: {e}")
         return None
 
-# ==========================================
-# دالة التوليد
-# ==========================================
 def calculate_generating_function(closes, target_price, stop_loss, current_price):
     try:
         if len(closes) < 20:
@@ -415,9 +394,6 @@ def calculate_generating_function(closes, target_price, stop_loss, current_price
         logger.error(f"Generating function error: {e}")
         return None
 
-# ==========================================
-# القيم الذاتية (ThreadPool)
-# ==========================================
 def calculate_portfolio_eigenvalues():
     try:
         cache_key = 'portfolio_eigenvalues'
@@ -436,9 +412,9 @@ def calculate_portfolio_eigenvalues():
                     result = future.result()
                     if result and len(result['closes']) >= 30:
                         data[symbol] = result['closes']
-                        logger.info(f"✅ Got data for {symbol}")
+                        logger.info(f"Got data for {symbol}")
                 except Exception as e:
-                    logger.error(f"❌ Failed for {symbol}: {e}")
+                    logger.error(f"Failed for {symbol}: {e}")
         
         if len(data) < 2:
             return None
@@ -484,15 +460,12 @@ def calculate_portfolio_eigenvalues():
         }
         
         set_cached_data(cache_key, result)
-        logger.info(f"✅ Portfolio eigenvalues calculated")
+        logger.info(f"Portfolio eigenvalues calculated")
         return result
     except Exception as e:
         logger.error(f"Eigenvalue error: {e}")
         return None
 
-# ==========================================
-# التحليل الموحّد
-# ==========================================
 def unified_analysis(symbol, interval="4h"):
     try:
         data = fetch_data(symbol, interval)
@@ -562,9 +535,6 @@ def unified_analysis(symbol, interval="4h"):
         logger.error(f"Analysis error: {e}")
         return None
 
-# ==========================================
-# الذكاء الاصطناعي
-# ==========================================
 def ask_qwen_ai(data):
     if not OPENROUTER_API_KEY:
         return None
@@ -594,9 +564,6 @@ def ask_qwen_ai(data):
         logger.error(f"Qwen AI error: {e}")
     return None
 
-# ==========================================
-# Dashboard HTML (نفس السابق - مختصر للوضوح)
-# ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -854,9 +821,6 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# ==========================================
-# Flask Routes
-# ==========================================
 app = Flask(__name__)
 
 @app.route('/')
@@ -873,7 +837,7 @@ def api_analyze():
     try:
         data = request.json
         analysis = unified_analysis(data.get('symbol', 'BTC-USD'), data.get('timeframe', '4h'))
-        if not analysis: return jsonify({'error': 'فشل تحليل الأصل'}), 400
+        if not analysis: return jsonify({'error': 'فشل تحليل الأصل - تأكد من صحة الرمز'}), 400
         if OPENROUTER_API_KEY:
             try: analysis['ai_analysis'] = ask_qwen_ai(analysis)
             except: pass
@@ -886,9 +850,6 @@ def run_flask():
     try: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
     except Exception as e: logger.error(f"Flask error: {e}")
 
-# ==========================================
-# Telegram Bot
-# ==========================================
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -951,7 +912,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
 
 def main():
-    logger.info("Starting bot with Twelve Data + Binance APIs...")
+    logger.info("Starting bot with Twelve Data + Binance APIs (no yfinance)...")
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask started")
     
