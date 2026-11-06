@@ -12,6 +12,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+try:
     from signal_image import generate_signal_image
 except ImportError:
     generate_signal_image = None
@@ -69,7 +74,7 @@ def fetch_from_binance(symbol, interval="4h"):
         url = f"https://api.binance.com/api/v3/klines"
         params = {"symbol": binance_symbol, "interval": binance_interval, "limit": 200}
         
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=15)
         if resp.status_code != 200:
             return None
         
@@ -90,7 +95,6 @@ def fetch_from_binance(symbol, interval="4h"):
 def fetch_from_twelvedata(symbol, interval="4h"):
     try:
         if not TWELVE_DATA_API_KEY:
-            logger.warning("TWELVE_DATA_API_KEY not set")
             return None
         
         td_symbol = symbol.replace('-USD', '/USD')
@@ -112,7 +116,6 @@ def fetch_from_twelvedata(symbol, interval="4h"):
         
         data = resp.json()
         if "status" in data and data["status"] == "error":
-            logger.warning(f"Twelve Data error for {symbol}: {data.get('message')}")
             return None
         
         values = data.get("values", [])
@@ -159,7 +162,7 @@ def fetch_from_finnhub(symbol, interval="1d"):
             "token": FINNHUB_API_KEY
         }
         
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=15)
         if resp.status_code != 200:
             return None
         
@@ -180,32 +183,57 @@ def fetch_from_finnhub(symbol, interval="1d"):
         logger.error(f"Finnhub error for {symbol}: {e}")
         return None
 
+def fetch_from_yfinance(symbol, interval="4h"):
+    try:
+        if yf is None:
+            return None
+        
+        period = "7d" if interval in ['1m', '5m'] else "1mo" if interval in ['15m', '30m'] else "6mo" if interval == '4h' else "1y"
+        hist = yf.Ticker(symbol).history(period=period, interval=interval)
+        
+        if hist.empty or len(hist) < 20:
+            return None
+        
+        closes = hist['Close'].tolist()
+        highs = hist['High'].tolist()
+        lows = hist['Low'].tolist()
+        volumes = hist['Volume'].tolist()
+        
+        return {'closes': closes, 'highs': highs, 'lows': lows, 'volumes': volumes}
+    except Exception as e:
+        logger.error(f"yfinance error for {symbol}: {e}")
+        return None
+
 def fetch_data(symbol, interval="4h"):
     cache_key = f"{symbol}_{interval}"
     cached = get_cached_data(cache_key)
     if cached:
-        logger.info(f"Using cached data for {symbol}")
+        logger.info(f"✅ Using cached data for {symbol}")
         return cached
     
     data = None
     
     if symbol in CRYPTO_SYMBOLS:
-        logger.info(f"Trying Binance for {symbol}")
+        logger.info(f"🔄 Trying Binance for {symbol}")
         data = fetch_from_binance(symbol, interval)
     
     if data is None and TWELVE_DATA_API_KEY:
-        logger.info(f"Trying Twelve Data for {symbol}")
+        logger.info(f"🔄 Trying Twelve Data for {symbol}")
         data = fetch_from_twelvedata(symbol, interval)
     
     if data is None and FINNHUB_API_KEY and symbol not in CRYPTO_SYMBOLS:
-        logger.info(f"Trying Finnhub for {symbol}")
+        logger.info(f"🔄 Trying Finnhub for {symbol}")
         data = fetch_from_finnhub(symbol, interval)
+    
+    if data is None:
+        logger.info(f"🔄 Trying yfinance fallback for {symbol}")
+        data = fetch_from_yfinance(symbol, interval)
     
     if data:
         set_cached_data(cache_key, data)
-        logger.info(f"Data fetched for {symbol} ({len(data['closes'])} candles)")
+        logger.info(f"✅ Data fetched for {symbol} ({len(data['closes'])} candles)")
     else:
-        logger.error(f"All API sources failed for {symbol}")
+        logger.error(f"❌ ALL sources failed for {symbol}")
     
     return data
 
@@ -303,9 +331,8 @@ def calculate_correlation_matrix():
                     result = future.result()
                     if result and len(result['closes']) >= 20:
                         data[symbol] = result['closes']
-                        logger.info(f"Got data for {symbol}")
-                except Exception as e:
-                    logger.error(f"Failed for {symbol}: {e}")
+                except:
+                    pass
         
         if len(data) < 2:
             return None
@@ -315,7 +342,6 @@ def calculate_correlation_matrix():
         result = corr_matrix.to_dict()
         
         set_cached_data(cache_key, result)
-        logger.info(f"Correlation matrix calculated for {len(data)} assets")
         return result
     except Exception as e:
         logger.error(f"Correlation error: {e}")
@@ -342,8 +368,7 @@ def calculate_transition_matrix(closes):
                 transition[i] /= transition[i].sum()
         
         return transition
-    except Exception as e:
-        logger.error(f"Transition matrix error: {e}")
+    except:
         return None
 
 def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
@@ -356,8 +381,7 @@ def predict_market_states(transition_matrix, current_state, days=[1, 3, 5]):
             probs = future_probs[current_state]
             predictions[days_ahead] = {'صاعد': float(probs[0]), 'هابط': float(probs[1]), 'جانبي': float(probs[2])}
         return predictions
-    except Exception as e:
-        logger.error(f"Prediction error: {e}")
+    except:
         return None
 
 def calculate_generating_function(closes, target_price, stop_loss, current_price):
@@ -390,8 +414,7 @@ def calculate_generating_function(closes, target_price, stop_loss, current_price
             'generating_function': f"1 / (1 - {2*mu/sigma**2:.2f}x - {-mu**2/sigma**2:.2f}x² + 0.05x³)",
             'risk_reward_ratio': float(abs(dist_to_tp / dist_to_sl)) if abs(dist_to_sl) > 1e-10 else 1.0
         }
-    except Exception as e:
-        logger.error(f"Generating function error: {e}")
+    except:
         return None
 
 def calculate_portfolio_eigenvalues():
@@ -412,9 +435,8 @@ def calculate_portfolio_eigenvalues():
                     result = future.result()
                     if result and len(result['closes']) >= 30:
                         data[symbol] = result['closes']
-                        logger.info(f"Got data for {symbol}")
-                except Exception as e:
-                    logger.error(f"Failed for {symbol}: {e}")
+                except:
+                    pass
         
         if len(data) < 2:
             return None
@@ -460,10 +482,8 @@ def calculate_portfolio_eigenvalues():
         }
         
         set_cached_data(cache_key, result)
-        logger.info(f"Portfolio eigenvalues calculated")
         return result
-    except Exception as e:
-        logger.error(f"Eigenvalue error: {e}")
+    except:
         return None
 
 def unified_analysis(symbol, interval="4h"):
@@ -560,8 +580,8 @@ def ask_qwen_ai(data):
             if 'choices' in result and len(result['choices']) > 0:
                 analysis = result['choices'][0]['message']['content'].strip().replace('**', '').replace('*', '').replace('#', '').replace('`', '')
                 return analysis[:197] + "..." if len(analysis) > 200 else analysis
-    except Exception as e:
-        logger.error(f"Qwen AI error: {e}")
+    except:
+        pass
     return None
 
 DASHBOARD_HTML = """
@@ -791,7 +811,6 @@ DASHBOARD_HTML = """
                 const gf = data.generating_function;
                 let html = '<div style="background:rgba(0,0,0,0.3);padding:15px;border-radius:10px;margin-bottom:15px;font-family:monospace;">G(x) = ' + gf.generating_function + '</div>';
                 html += '<div class="result-item"><span class="result-label">احتمال TP1 (5 أيام)</span><span class="result-value" style="color:#00c853;">' + (gf.prob_tp_5d*100).toFixed(0) + '%</span></div>';
-                html += '<div class="result-item"><span class="result-label">احتمال TP1 (10 أيام)</span><span class="result-value" style="color:#00c853;">' + (gf.prob_tp_10d*100).toFixed(0) + '%</span></div>';
                 html += '<div class="result-item"><span class="result-label">احتمال SL (5 أيام)</span><span class="result-value" style="color:#ff1744;">' + (gf.prob_sl_5d*100).toFixed(0) + '%</span></div>';
                 html += '<div class="result-item"><span class="result-label">نسبة المخاطرة/العائد</span><span class="result-value">1:' + gf.risk_reward_ratio.toFixed(2) + '</span></div>';
                 genDiv.innerHTML = html;
@@ -836,11 +855,21 @@ def dashboard(): return render_template_string(DASHBOARD_HTML)
 def api_analyze():
     try:
         data = request.json
-        analysis = unified_analysis(data.get('symbol', 'BTC-USD'), data.get('timeframe', '4h'))
-        if not analysis: return jsonify({'error': 'فشل تحليل الأصل - تأكد من صحة الرمز'}), 400
+        symbol = data.get('symbol', 'BTC-USD')
+        timeframe = data.get('timeframe', '4h')
+        
+        logger.info(f"🔍 Analyzing {symbol} {timeframe}")
+        
+        analysis = unified_analysis(symbol, timeframe)
+        if not analysis:
+            return jsonify({'error': f'فشل تحليل {symbol}'}), 400
+        
         if OPENROUTER_API_KEY:
-            try: analysis['ai_analysis'] = ask_qwen_ai(analysis)
-            except: pass
+            try:
+                analysis['ai_analysis'] = ask_qwen_ai(analysis)
+            except:
+                pass
+        
         return jsonify(analysis)
     except Exception as e:
         logger.error(f"API error: {e}")
@@ -854,7 +883,7 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
         if not args:
-            await update.message.reply_text("الاستخدام: /smart <رمز> [تايم_فريم]\nمثال: /smart BTC-USD 4h")
+            await update.message.reply_text("الاستخدام: /smart <رمز> [تايم_فريم]")
             return
         symbol = args[0].strip()
         interval = args[1].strip().lower() if len(args) > 1 else "4h"
@@ -863,18 +892,13 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"جاري تحليل {symbol}...")
         data = unified_analysis(symbol, interval)
         if not data:
-            await update.message.reply_text(f"فشل تحليل {symbol}. تأكد من صحة الرمز.")
+            await update.message.reply_text(f"فشل تحليل {symbol}.")
             return
         
         ai_analysis = None
         if OPENROUTER_API_KEY:
             await update.message.reply_text("جاري تحليل الذكاء الاصطناعي...")
             ai_analysis = ask_qwen_ai(data)
-        
-        if generate_signal_image:
-            try:
-                await update.message.reply_photo(photo=BytesIO(generate_signal_image(data)), caption=f"{symbol}")
-            except: pass
         
         emoji = "🟢" if 'شراء' in data['action'] else "🔴" if 'بيع' in data['action'] else "⚪"
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
@@ -912,7 +936,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
 
 def main():
-    logger.info("Starting bot with Twelve Data + Binance APIs (no yfinance)...")
+    logger.info("Starting bot...")
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask started")
     
