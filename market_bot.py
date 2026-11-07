@@ -42,6 +42,29 @@ TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
 
 CRYPTO_SYMBOLS = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-USD', 'DOGE-USD']
 
+DEFILLAMA_API = "https://api.llama.fi"
+DEFILLAMA_YIELDS_API = "https://yields.llama.fi"
+
+SYMBOL_TO_PROTOCOL = {
+    'BTC-USD': {'type': 'chain', 'slug': 'bitcoin'},
+    'ETH-USD': {'type': 'chain', 'slug': 'ethereum'},
+    'XRP-USD': {'type': 'chain', 'slug': 'xrp'},
+    'BNB-USD': {'type': 'chain', 'slug': 'bsc'},
+    'SOL-USD': {'type': 'chain', 'slug': 'solana'},
+    'ADA-USD': {'type': 'chain', 'slug': 'cardano'},
+    'DOGE-USD': {'type': 'chain', 'slug': 'dogecoin'},
+    'AVAX-USD': {'type': 'chain', 'slug': 'avalanche'},
+    'MATIC-USD': {'type': 'chain', 'slug': 'polygon'},
+    'DOT-USD': {'type': 'chain', 'slug': 'polkadot'},
+    'LINK-USD': {'type': 'protocol', 'slug': 'chainlink'},
+    'UNI-USD': {'type': 'protocol', 'slug': 'uniswap'},
+    'AAVE-USD': {'type': 'protocol', 'slug': 'aave'},
+    'COMP-USD': {'type': 'protocol', 'slug': 'compound'},
+    'MKR-USD': {'type': 'protocol', 'slug': 'makerdao'},
+    'CRV-USD': {'type': 'protocol', 'slug': 'curve-dao-token'},
+    'LDO-USD': {'type': 'protocol', 'slug': 'lido-dao'},
+}
+
 _data_cache = {}
 CACHE_DURATION = 3600
 
@@ -198,32 +221,24 @@ def fetch_data(symbol, interval="4h"):
     cache_key = f"{symbol}_{interval}"
     cached = get_cached_data(cache_key)
     if cached:
-        logger.info(f"✅ Using cached data for {symbol}")
         return cached
     
     data = None
     
     if symbol in CRYPTO_SYMBOLS:
-        logger.info(f"🔄 Trying Binance for {symbol}")
         data = fetch_from_binance(symbol, interval)
     
     if data is None and TWELVE_DATA_API_KEY:
-        logger.info(f"🔄 Trying Twelve Data for {symbol}")
         data = fetch_from_twelvedata(symbol, interval)
     
     if data is None and FINNHUB_API_KEY and symbol not in CRYPTO_SYMBOLS:
-        logger.info(f"🔄 Trying Finnhub for {symbol}")
         data = fetch_from_finnhub(symbol, interval)
     
     if data is None:
-        logger.info(f"🔄 Trying yfinance fallback for {symbol}")
         data = fetch_from_yfinance(symbol, interval)
     
     if data:
         set_cached_data(cache_key, data)
-        logger.info(f"✅ Data fetched for {symbol} ({len(data['closes'])} candles)")
-    else:
-        logger.error(f"❌ ALL sources failed for {symbol}")
     
     return data
 
@@ -286,7 +301,7 @@ def calc_atr(highs, lows, closes, period=14):
     except:
         return closes[-1] * 0.02
 
-def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
+def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score, defillama_score=0):
     score = 0
     if rsi < 30: score += 3
     elif rsi > 70: score -= 3
@@ -296,12 +311,160 @@ def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score):
     if smc_zone == 'LOWER_DISCOUNT': score += 2
     elif smc_zone == 'UPPER_PREMIUM': score -= 2
     score += diff_trend_score
+    score += defillama_score
     
     if score >= 4: return 'شراء قوي', score, 'عالية'
     elif score >= 1: return 'شراء حذر', score, 'متوسطة'
     elif score <= -4: return 'بيع قوي', score, 'عالية'
     elif score <= -1: return 'بيع حذر', score, 'متوسطة'
     else: return 'انتظار', score, 'منخفضة'
+
+def get_defillama_tvl(slug):
+    try:
+        url = f"{DEFILLAMA_API}/v2/historicalChainTvl/{slug}"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        if not data or len(data) < 30:
+            return None
+        
+        current_tvl = data[-1]['totalLiquidityUSD']
+        seven_days_ago = data[-7]['totalLiquidityUSD'] if len(data) >= 7 else data[0]['totalLiquidityUSD']
+        thirty_days_ago = data[-30]['totalLiquidityUSD'] if len(data) >= 30 else data[0]['totalLiquidityUSD']
+        
+        change_7d = ((current_tvl - seven_days_ago) / seven_days_ago * 100) if seven_days_ago > 0 else 0
+        change_30d = ((current_tvl - thirty_days_ago) / thirty_days_ago * 100) if thirty_days_ago > 0 else 0
+        
+        if change_7d > 5 and change_30d > 10:
+            trend, trend_score = "صعودي قوي", 2
+        elif change_7d > 0:
+            trend, trend_score = "صعودي", 1
+        elif change_7d < -5 and change_30d < -10:
+            trend, trend_score = "هبوطي قوي", -2
+        elif change_7d < 0:
+            trend, trend_score = "هبوطي", -1
+        else:
+            trend, trend_score = "مستقر", 0
+        
+        return {
+            'current_tvl': current_tvl,
+            'change_7d': change_7d,
+            'change_30d': change_30d,
+            'trend': trend,
+            'trend_score': trend_score
+        }
+    except Exception as e:
+        logger.error(f"DeFiLlama TVL error: {e}")
+        return None
+
+def get_defillama_protocol(slug):
+    try:
+        url = f"{DEFILLAMA_API}/protocol/{slug}"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        current_tvl = data.get('currentChainTvls', {})
+        total_tvl = sum(current_tvl.values()) if current_tvl else 0
+        
+        hacks = data.get('hacks', [])
+        recent_hacks = [h for h in hacks if h.get('date', 0) > (time.time() - 180 * 86400)]
+        
+        return {
+            'name': data.get('name', slug),
+            'category': data.get('category', 'Unknown'),
+            'tvl': total_tvl,
+            'hacks_count': len(recent_hacks),
+            'is_safe': len(recent_hacks) == 0
+        }
+    except Exception as e:
+        logger.error(f"DeFiLlama protocol error: {e}")
+        return None
+
+def get_top_yields(limit=10):
+    try:
+        url = f"{DEFILLAMA_YIELDS_API}/pools"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return []
+        
+        data = resp.json().get('data', [])
+        
+        safe_yields = [
+            pool for pool in data 
+            if pool.get('tvlUsd', 0) > 10_000_000 
+            and pool.get('apy', 0) > 5
+        ]
+        
+        safe_yields.sort(key=lambda x: x.get('apy', 0), reverse=True)
+        
+        return [
+            {
+                'chain': pool.get('chain', 'Unknown'),
+                'project': pool.get('project', 'Unknown'),
+                'symbol': pool.get('symbol', ''),
+                'tvl': pool.get('tvlUsd', 0),
+                'apy': pool.get('apy', 0)
+            }
+            for pool in safe_yields[:limit]
+        ]
+    except Exception as e:
+        logger.error(f"DeFiLlama yields error: {e}")
+        return []
+
+def get_defillama_analysis(symbol):
+    try:
+        cache_key = f"defillama_{symbol}"
+        cached = get_cached_data(cache_key)
+        if cached:
+            return cached
+        
+        mapping = SYMBOL_TO_PROTOCOL.get(symbol)
+        if not mapping:
+            return None
+        
+        result = {
+            'protocol_info': None,
+            'tvl_data': None,
+            'score_impact': 0,
+            'recommendation': ''
+        }
+        
+        tvl_data = get_defillama_tvl(mapping['slug'])
+        if tvl_data:
+            result['tvl_data'] = tvl_data
+            result['score_impact'] += tvl_data['trend_score']
+        
+        if mapping['type'] == 'protocol':
+            protocol_info = get_defillama_protocol(mapping['slug'])
+            if protocol_info:
+                result['protocol_info'] = protocol_info
+                if not protocol_info['is_safe']:
+                    result['score_impact'] -= 3
+                    result['recommendation'] = '⚠️ البروتوكول لديه اختراقات حديثة!'
+                else:
+                    result['score_impact'] += 1
+                    result['recommendation'] = '✅ البروتوكول آمن'
+        
+        if result['score_impact'] >= 2:
+            result['recommendation'] = '🟢 سيولة قوية ومتنامية'
+        elif result['score_impact'] >= 1:
+            result['recommendation'] = '🟡 سيولة مستقرة'
+        elif result['score_impact'] <= -2:
+            result['recommendation'] = '🔴 سيولة متراجعة - احذر!'
+        elif result['score_impact'] <= -1:
+            result['recommendation'] = '🟠 سيولة ضعيفة'
+        else:
+            result['recommendation'] = '⚪ بيانات غير كافية'
+        
+        set_cached_data(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"DeFiLlama analysis error: {e}")
+        return None
 
 def calculate_correlation_matrix():
     try:
@@ -315,18 +478,13 @@ def calculate_correlation_matrix():
         
         for symbol in symbols:
             try:
-                logger.info(f"🔄 Fetching {symbol} for correlation...")
                 result = fetch_data(symbol, '1d')
                 if result and len(result['closes']) >= 20:
                     data[symbol] = result['closes']
-                    logger.info(f"✅ Got {symbol} ({len(result['closes'])} candles)")
-                else:
-                    logger.warning(f"⚠️ Failed for {symbol}")
-            except Exception as e:
-                logger.error(f"❌ Error for {symbol}: {e}")
+            except:
+                pass
         
         if len(data) < 2:
-            logger.warning(f"Only {len(data)} assets available")
             return None
         
         df = pd.DataFrame(data)
@@ -334,7 +492,6 @@ def calculate_correlation_matrix():
         result = corr_matrix.to_dict()
         
         set_cached_data(cache_key, result)
-        logger.info(f"✅ Correlation matrix ready for {len(data)} assets")
         return result
     except Exception as e:
         logger.error(f"Correlation error: {e}")
@@ -422,15 +579,11 @@ def calculate_portfolio_eigenvalues():
         
         for symbol in symbols:
             try:
-                logger.info(f"🔄 Fetching {symbol} for eigenvalues...")
                 result = fetch_data(symbol, '1d')
                 if result and len(result['closes']) >= 30:
                     data[symbol] = result['closes']
-                    logger.info(f"✅ Got {symbol}")
-                else:
-                    logger.warning(f"⚠️ Failed for {symbol}")
-            except Exception as e:
-                logger.error(f"❌ Error for {symbol}: {e}")
+            except:
+                pass
         
         if len(data) < 2:
             return None
@@ -476,7 +629,6 @@ def calculate_portfolio_eigenvalues():
         }
         
         set_cached_data(cache_key, result)
-        logger.info(f"✅ Portfolio eigenvalues calculated")
         return result
     except:
         return None
@@ -503,7 +655,13 @@ def unified_analysis(symbol, interval="4h"):
             except:
                 pass
         
-        action, score, conf = get_recommendation(rsi, stochastic.get('sharpe_ratio', 0), smc_score, smc_zone, diff_trend_score)
+        defillama_data = get_defillama_analysis(symbol)
+        defillama_score = defillama_data.get('score_impact', 0) if defillama_data else 0
+        
+        action, score, conf = get_recommendation(
+            rsi, stochastic.get('sharpe_ratio', 0), 
+            smc_score, smc_zone, diff_trend_score, defillama_score
+        )
         
         if 'شراء' in action:
             sl, tp1, tp2, tp3 = price - (atr * 0.8), price + (atr * 1.5), price + (atr * 2.5), price + (atr * 3.5)
@@ -522,7 +680,8 @@ def unified_analysis(symbol, interval="4h"):
             'confidence': conf, 'stochastic': stochastic, 'smc_zone': smc_zone,
             'differential': diff_analysis, 'transition_matrix': None,
             'market_predictions': None, 'generating_function': None,
-            'correlation_matrix': None, 'portfolio_analysis': None
+            'correlation_matrix': None, 'portfolio_analysis': None,
+            'defillama': defillama_data
         }
         
         try:
@@ -551,13 +710,8 @@ def unified_analysis(symbol, interval="4h"):
         return None
 
 def ask_qwen_ai(data):
-    logger.info(f"🤖 Starting AI analysis for {data.get('symbol', 'unknown')}")
-    
     if not OPENROUTER_API_KEY:
-        logger.error("❌ OPENROUTER_API_KEY is not set!")
         return None
-    
-    logger.info(f"✅ OPENROUTER_API_KEY found (length: {len(OPENROUTER_API_KEY)})")
     
     try:
         diff_info = f"المشتقات: {data['differential']['trend']}. " if data.get('differential') else ""
@@ -565,12 +719,14 @@ def ask_qwen_ai(data):
         if data.get('market_predictions') and 1 in data['market_predictions']:
             pred_info = f"توقع غد: صاعد {int(data['market_predictions'][1].get('صاعد', 0)*100)}%. "
         
+        defi_info = ""
+        if data.get('defillama') and data['defillama'].get('recommendation'):
+            defi_info = f"DeFiLlama: {data['defillama']['recommendation']}. "
+        
         prompt = (f"أنت محلل تداول محترف. الرمز: {data['symbol']}. السعر: {data['price']}. "
                   f"التوصية: {data['action']}. RSI: {data['rsi']:.1f}. Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
-                  f"المنطقة: {data['smc_zone']}. {diff_info}{pred_info} "
+                  f"المنطقة: {data['smc_zone']}. {diff_info}{pred_info}{defi_info} "
                   f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. لا تستخدم ** أو # أو أي رموز.")
-        
-        logger.info(f"📤 Sending request to OpenRouter...")
         
         res = requests.post(
             OPENROUTER_API_URL,
@@ -587,26 +743,14 @@ def ask_qwen_ai(data):
             timeout=30
         )
         
-        logger.info(f"📥 Response status: {res.status_code}")
-        
         if res.status_code == 200:
             result = res.json()
             if 'choices' in result and len(result['choices']) > 0:
                 analysis = result['choices'][0]['message']['content'].strip()
                 analysis = analysis.replace('**', '').replace('*', '').replace('#', '').replace('`', '')
-                logger.info(f"✅ AI analysis received: {analysis[:50]}...")
                 return analysis[:197] + "..." if len(analysis) > 200 else analysis
-            else:
-                logger.error(f"❌ No choices in response: {result}")
-        else:
-            logger.error(f"❌ API returned status {res.status_code}: {res.text[:200]}")
-            
-    except requests.exceptions.Timeout:
-        logger.error("❌ Request timed out")
-    except requests.exceptions.ConnectionError:
-        logger.error("❌ Connection error")
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}")
+        logger.error(f"Qwen AI error: {e}")
     
     return None
 
@@ -648,12 +792,6 @@ DASHBOARD_HTML = """
         .tp { color: #00c853; }
         .ai-section { background: rgba(0,210,255,0.1); border: 1px solid rgba(0,210,255,0.3); border-radius: 15px; padding: 25px; margin-bottom: 30px; }
         .ai-section h3 { color: #00d2ff; margin-bottom: 15px; }
-        .corr-matrix { display: grid; gap: 5px; margin-top: 15px; }
-        .corr-cell { padding: 8px; text-align: center; border-radius: 5px; font-size: 0.85em; font-weight: bold; }
-        .corr-high { background: rgba(0,200,83,0.3); }
-        .corr-med { background: rgba(255,171,0,0.3); }
-        .corr-low { background: rgba(255,23,68,0.3); }
-        .corr-header { background: rgba(0,210,255,0.2); color: #00d2ff; }
         .prediction-bar { display: flex; height: 30px; border-radius: 15px; overflow: hidden; margin: 10px 0; }
         .pred-up { background: #00c853; }
         .pred-down { background: #ff1744; }
@@ -667,7 +805,7 @@ DASHBOARD_HTML = """
 <body>
     <div class="container">
         <h1>Quant Trading Bot</h1>
-        <p class="subtitle">Advanced Mathematics Edition</p>
+        <p class="subtitle">Advanced Mathematics + DeFi Edition</p>
         <div class="control-panel">
             <div class="control-row">
                 <div class="control-group">
@@ -757,10 +895,22 @@ DASHBOARD_HTML = """
                     <div class="result-item"><span class="result-label">المنطقة</span><span class="result-value" id="smcZone"></span></div>
                     <div class="result-item"><span class="result-label">العائد/المخاطرة</span><span class="result-value" id="rr"></span></div>
                 </div>
-                <div class="result-card" id="corrCard"><h3>📊 مصفوفة الارتباط</h3><div id="corrMatrix"></div><div id="corrAdvice" style="margin-top:15px; color:#00d2ff;"></div></div>
-                <div class="result-card" id="predCard"><h3>🔮 التنبؤ بحالة السوق</h3><div id="predictions"></div></div>
-                <div class="result-card" id="genCard"><h3>🎲 دالة التوليد</h3><div id="genFunction"></div></div>
-                <div class="result-card" id="eigenCard"><h3>🧬 القيم الذاتية</h3><div id="eigenvalues"></div></div>
+                <div class="result-card" id="defillamaCard">
+                    <h3>🦙 DeFiLlama Analysis</h3>
+                    <div id="defillamaContent"></div>
+                </div>
+                <div class="result-card" id="predCard">
+                    <h3>🔮 التنبؤ بحالة السوق</h3>
+                    <div id="predictions"></div>
+                </div>
+                <div class="result-card" id="genCard">
+                    <h3>🎲 دالة التوليد</h3>
+                    <div id="genFunction"></div>
+                </div>
+                <div class="result-card" id="yieldsCard">
+                    <h3>💰 Top DeFi Yields</h3>
+                    <div id="yieldsContent"></div>
+                </div>
             </div>
             <div class="ai-section"><h3>🤖 تحليل الذكاء الاصطناعي</h3><p id="aiAnalysis"></p></div>
         </div>
@@ -810,33 +960,28 @@ DASHBOARD_HTML = """
                 document.getElementById('sharpe').textContent = data.stochastic.sharpe_ratio.toFixed(2);
                 document.getElementById('var95').textContent = (data.stochastic.var_95 * 100).toFixed(2) + '%';
             }
-            if (data.correlation_matrix) {
-                const corrDiv = document.getElementById('corrMatrix');
-                const symbols = Object.keys(data.correlation_matrix);
-                let html = '<div class="corr-matrix" style="grid-template-columns: 80px repeat(' + symbols.length + ', 1fr);">';
-                html += '<div class="corr-cell corr-header"></div>';
-                symbols.forEach(s => { html += '<div class="corr-cell corr-header">' + s.split('-')[0] + '</div>'; });
-                symbols.forEach(row => {
-                    html += '<div class="corr-cell corr-header">' + row.split('-')[0] + '</div>';
-                    symbols.forEach(col => {
-                        const val = data.correlation_matrix[row][col];
-                        let cls = 'corr-low';
-                        if (val > 0.6) cls = 'corr-high';
-                        else if (val > 0.3) cls = 'corr-med';
-                        html += '<div class="corr-cell ' + cls + '">' + val.toFixed(2) + '</div>';
-                    });
-                });
-                html += '</div>';
-                corrDiv.innerHTML = html;
-                let advice = '💡 ', highCorr = [];
-                symbols.forEach((s1, i) => {
-                    symbols.forEach((s2, j) => {
-                        if (i < j && data.correlation_matrix[s1][s2] > 0.7) highCorr.push(s1.split('-')[0] + ' و ' + s2.split('-')[0]);
-                    });
-                });
-                document.getElementById('corrAdvice').textContent = advice + (highCorr.length > 0 ? 'تجنب: ' + highCorr.join(', ') + ' (ارتباط عالي)' : 'المحفظة متنوعة بشكل جيد');
+            if (data.defillama) {
+                const dl = data.defillama;
+                let dlHtml = '';
+                if (dl.recommendation) {
+                    dlHtml += '<div style="padding:10px;background:rgba(0,210,255,0.1);border-radius:8px;margin-bottom:10px;"><strong>' + dl.recommendation + '</strong></div>';
+                }
+                if (dl.tvl_data) {
+                    const tvl = dl.tvl_data;
+                    const formatTvl = (n) => '$' + (n / 1e9).toFixed(2) + 'B';
+                    dlHtml += '<div class="result-item"><span class="result-label">TVL الحالي</span><span class="result-value">' + formatTvl(tvl.current_tvl) + '</span></div>';
+                    dlHtml += '<div class="result-item"><span class="result-label">تغير 7 أيام</span><span class="result-value" style="color:' + (tvl.change_7d >= 0 ? '#00c853' : '#ff1744') + ';">' + tvl.change_7d.toFixed(2) + '%</span></div>';
+                    dlHtml += '<div class="result-item"><span class="result-label">تغير 30 يوم</span><span class="result-value" style="color:' + (tvl.change_30d >= 0 ? '#00c853' : '#ff1744') + ';">' + tvl.change_30d.toFixed(2) + '%</span></div>';
+                    dlHtml += '<div class="result-item"><span class="result-label">الاتجاه</span><span class="result-value">' + tvl.trend + '</span></div>';
+                }
+                if (dl.protocol_info) {
+                    const pi = dl.protocol_info;
+                    dlHtml += '<div class="result-item"><span class="result-label">الفئة</span><span class="result-value">' + pi.category + '</span></div>';
+                    dlHtml += '<div class="result-item"><span class="result-label">الأمان</span><span class="result-value" style="color:' + (pi.is_safe ? '#00c853' : '#ff1744') + ';">' + (pi.is_safe ? '✅ آمن' : '⚠️ مخترق') + '</span></div>';
+                }
+                document.getElementById('defillamaContent').innerHTML = dlHtml || '<p style="color:#aaa;">غير متاحة</p>';
             } else {
-                document.getElementById('corrCard').innerHTML = '<h3>📊 مصفوفة الارتباط</h3><p style="color:#aaa;">غير متاحة حالياً</p>';
+                document.getElementById('defillamaCard').innerHTML = '<h3>🦙 DeFiLlama Analysis</h3><p style="color:#aaa;">غير متاحة لهذه العملة</p>';
             }
             if (data.market_predictions) {
                 const predDiv = document.getElementById('predictions');
@@ -869,22 +1014,26 @@ DASHBOARD_HTML = """
             } else {
                 document.getElementById('genCard').innerHTML = '<h3>🎲 دالة التوليد</h3><p style="color:#aaa;">غير متاحة حالياً</p>';
             }
-            if (data.portfolio_analysis) {
-                const eigDiv = document.getElementById('eigenvalues');
-                const pa = data.portfolio_analysis;
-                let html = '<div style="margin-bottom:15px;"><strong>القيم الذاتية:</strong></div>';
-                pa.eigenvalues.forEach((val, i) => {
-                    html += '<div style="display:flex;justify-content:space-between;padding:5px 0;"><span>λ' + (i+1) + ' = ' + val.toFixed(2) + '</span><span style="color:#00d2ff;">' + (pa.variance_ratio[i] * 100).toFixed(0) + '%</span></div>';
-                });
-                html += '<div style="margin-top:15px;"><strong>المحفظة المحسنة:</strong></div>';
-                pa.symbols.forEach((sym, i) => {
-                    html += '<div style="display:flex;justify-content:space-between;padding:5px 0;"><span>' + sym.split('-')[0] + '</span><span>' + (pa.optimal_weights[i]*100).toFixed(0) + '%</span></div>';
-                });
-                html += '<div style="margin-top:15px;padding:10px;background:rgba(0,200,83,0.1);border-radius:8px;">💡 تقليل المخاطر: ' + (pa.risk_reduction * 100).toFixed(0) + '%</div>';
-                eigDiv.innerHTML = html;
-            } else {
-                document.getElementById('eigenCard').innerHTML = '<h3>🧬 القيم الذاتية</h3><p style="color:#aaa;">غير متاحة حالياً</p>';
-            }
+            fetch('/api/yields').then(r => r.json()).then(yData => {
+                if (yData.yields && yData.yields.length > 0) {
+                    let yHtml = '';
+                    yData.yields.forEach((y, i) => {
+                        const tvlStr = '$' + (y.tvl / 1e6).toFixed(0) + 'M';
+                        yHtml += '<div style="padding:8px;margin-bottom:5px;background:rgba(255,255,255,0.03);border-radius:6px;">';
+                        yHtml += '<div style="display:flex;justify-content:space-between;">';
+                        yHtml += '<span><strong>' + (i+1) + '. ' + y.project + '</strong> <small style="color:#aaa;">(' + y.chain + ')</small></span>';
+                        yHtml += '<span style="color:#00c853;font-weight:bold;">' + y.apy.toFixed(1) + '% APY</span>';
+                        yHtml += '</div>';
+                        yHtml += '<div style="font-size:0.85em;color:#aaa;margin-top:3px;">' + y.symbol + ' • TVL: ' + tvlStr + '</div>';
+                        yHtml += '</div>';
+                    });
+                    document.getElementById('yieldsContent').innerHTML = yHtml;
+                } else {
+                    document.getElementById('yieldsContent').innerHTML = '<p style="color:#aaa;">غير متاحة حالياً</p>';
+                }
+            }).catch(() => {
+                document.getElementById('yieldsContent').innerHTML = '<p style="color:#aaa;">فشل في جلب البيانات</p>';
+            });
             document.getElementById('aiAnalysis').textContent = data.ai_analysis || 'غير متاح';
         }
     </script>
@@ -910,31 +1059,28 @@ def api_analyze():
         symbol = data.get('symbol', 'BTC-USD')
         timeframe = data.get('timeframe', '4h')
         
-        logger.info(f"🔍 Analyzing {symbol} {timeframe}")
-        
         analysis = unified_analysis(symbol, timeframe)
         if not analysis:
             return jsonify({'error': f'فشل تحليل {symbol}'}), 400
         
         if OPENROUTER_API_KEY:
-            logger.info("🤖 Attempting AI analysis...")
             try:
-                ai_result = ask_qwen_ai(analysis)
-                analysis['ai_analysis'] = ai_result
-                if ai_result:
-                    logger.info("✅ AI analysis added successfully")
-                else:
-                    logger.warning("⚠️ AI analysis returned None")
-            except Exception as e:
-                logger.error(f"❌ AI analysis failed: {e}")
-                analysis['ai_analysis'] = None
-        else:
-            logger.warning("⚠️ OPENROUTER_API_KEY not set, skipping AI")
-            analysis['ai_analysis'] = None
+                analysis['ai_analysis'] = ask_qwen_ai(analysis)
+            except:
+                pass
         
         return jsonify(analysis)
     except Exception as e:
         logger.error(f"API error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/yields')
+def api_yields():
+    try:
+        yields = get_top_yields(10)
+        return jsonify({'yields': yields})
+    except Exception as e:
+        logger.error(f"Yields API error: {e}")
         return jsonify({'error': str(e)}), 500
 
 def run_flask():
@@ -966,13 +1112,18 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dashboard_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')
         
         diff_section = f"\nالمشتقات:\n- السرعة: {data['differential']['velocity']:+.2f}\n- التسارع: {data['differential']['acceleration']:+.2f}\n- الاتجاه: {data['differential']['trend']}\n" if data.get('differential') else ""
+        
+        defi_section = ""
+        if data.get('defillama') and data['defillama'].get('recommendation'):
+            defi_section = f"\n🦙 DeFiLlama: {data['defillama']['recommendation']}\n"
+        
         ai_section = f"\nتحليل الذكاء الاصطناعي:\n{ai_analysis}\n" if ai_analysis else ""
         
         msg = (f"{emoji} {data['symbol']} ({data['interval'].upper()})\n"
                f"السعر: {data['price']:,.2f}\nالتوصية: {data['action']} (Score: {data['score']})\n"
                f"العائد/المخاطرة: 1:{data['rr']:.2f}\n\nمستويات التداول:\n"
                f"SL: {data['sl']:,.2f}\nTP1: {data['tp1']:,.2f}\nTP2: {data['tp2']:,.2f}\nTP3: {data['tp3']:,.2f}\n"
-               f"{diff_section}{ai_section}\nللتفاصيل: {dashboard_url}/dashboard\nهذه ليست نصيحة مالية.")
+               f"{diff_section}{defi_section}{ai_section}\nللتفاصيل: {dashboard_url}/dashboard\nهذه ليست نصيحة مالية.")
         
         await update.message.reply_text(msg)
         
@@ -998,7 +1149,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
 
 def main():
-    logger.info("Starting bot...")
+    logger.info("Starting bot with DeFiLlama integration...")
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask started")
     
