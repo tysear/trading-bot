@@ -44,25 +44,27 @@ CRYPTO_SYMBOLS = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'BNB-USD', 'SOL-USD', 'ADA-US
 
 DEFILLAMA_API = "https://api.llama.fi"
 DEFILLAMA_YIELDS_API = "https://yields.llama.fi"
+ALTERNATIVE_ME_API = "https://api.alternative.me/fng/"
+BINANCE_FUTURES_API = "https://fapi.binance.com"
 
 SYMBOL_TO_PROTOCOL = {
-    'BTC-USD': {'type': 'chain', 'slug': 'bitcoin'},
-    'ETH-USD': {'type': 'chain', 'slug': 'ethereum'},
-    'XRP-USD': {'type': 'chain', 'slug': 'xrp'},
-    'BNB-USD': {'type': 'chain', 'slug': 'bsc'},
-    'SOL-USD': {'type': 'chain', 'slug': 'solana'},
-    'ADA-USD': {'type': 'chain', 'slug': 'cardano'},
-    'DOGE-USD': {'type': 'chain', 'slug': 'dogecoin'},
-    'AVAX-USD': {'type': 'chain', 'slug': 'avalanche'},
-    'MATIC-USD': {'type': 'chain', 'slug': 'polygon'},
-    'DOT-USD': {'type': 'chain', 'slug': 'polkadot'},
-    'LINK-USD': {'type': 'protocol', 'slug': 'chainlink'},
-    'UNI-USD': {'type': 'protocol', 'slug': 'uniswap'},
-    'AAVE-USD': {'type': 'protocol', 'slug': 'aave'},
-    'COMP-USD': {'type': 'protocol', 'slug': 'compound'},
-    'MKR-USD': {'type': 'protocol', 'slug': 'makerdao'},
-    'CRV-USD': {'type': 'protocol', 'slug': 'curve-dao-token'},
-    'LDO-USD': {'type': 'protocol', 'slug': 'lido-dao'},
+    'BTC-USD': {'type': 'chain', 'slug': 'bitcoin', 'binance': 'BTCUSDT'},
+    'ETH-USD': {'type': 'chain', 'slug': 'ethereum', 'binance': 'ETHUSDT'},
+    'XRP-USD': {'type': 'chain', 'slug': 'xrp', 'binance': 'XRPUSDT'},
+    'BNB-USD': {'type': 'chain', 'slug': 'bsc', 'binance': 'BNBUSDT'},
+    'SOL-USD': {'type': 'chain', 'slug': 'solana', 'binance': 'SOLUSDT'},
+    'ADA-USD': {'type': 'chain', 'slug': 'cardano', 'binance': 'ADAUSDT'},
+    'DOGE-USD': {'type': 'chain', 'slug': 'dogecoin', 'binance': 'DOGEUSDT'},
+    'AVAX-USD': {'type': 'chain', 'slug': 'avalanche', 'binance': 'AVAXUSDT'},
+    'MATIC-USD': {'type': 'chain', 'slug': 'polygon', 'binance': 'MATICUSDT'},
+    'DOT-USD': {'type': 'chain', 'slug': 'polkadot', 'binance': 'DOTUSDT'},
+    'LINK-USD': {'type': 'protocol', 'slug': 'chainlink', 'binance': 'LINKUSDT'},
+    'UNI-USD': {'type': 'protocol', 'slug': 'uniswap', 'binance': 'UNIUSDT'},
+    'AAVE-USD': {'type': 'protocol', 'slug': 'aave', 'binance': 'AAVEUSDT'},
+    'COMP-USD': {'type': 'protocol', 'slug': 'compound', 'binance': 'COMPUSDT'},
+    'MKR-USD': {'type': 'protocol', 'slug': 'makerdao', 'binance': 'MKRUSDT'},
+    'CRV-USD': {'type': 'protocol', 'slug': 'curve-dao-token', 'binance': 'CRVUSDT'},
+    'LDO-USD': {'type': 'protocol', 'slug': 'lido-dao', 'binance': 'LDOUSDT'},
 }
 
 _data_cache = {}
@@ -78,6 +80,9 @@ def get_cached_data(key):
 def set_cached_data(key, data):
     _data_cache[key] = (data, time.time())
 
+# ==========================================
+# Data Fetching Functions
+# ==========================================
 def fetch_from_binance(symbol, interval="4h"):
     try:
         binance_symbol = symbol.replace('-USD', 'USDT')
@@ -242,83 +247,129 @@ def fetch_data(symbol, interval="4h"):
     
     return data
 
-def advanced_differential_analysis(closes):
+# ==========================================
+# Fear & Greed Index
+# ==========================================
+def get_fear_greed_index():
+    """جلب مؤشر الخوف والطمع"""
     try:
-        if not closes or len(closes) < 10:
+        cache_key = 'fear_greed_index'
+        cached = get_cached_data(cache_key)
+        if cached:
+            return cached
+        
+        resp = requests.get(ALTERNATIVE_ME_API, timeout=10)
+        if resp.status_code != 200:
             return None
-        prices = np.array(closes[-20:], dtype=float)
-        velocity = np.diff(prices)
-        current_velocity = float(velocity[-1])
-        acceleration = float(np.diff(velocity)[-1]) if len(velocity) >= 2 else 0.0
         
-        if current_velocity > 0 and acceleration > 0:
-            trend, trend_score = "صاعد متسارع", 2
-        elif current_velocity > 0:
-            trend, trend_score = "صاعد متباطئ", 1
-        elif current_velocity < 0 and acceleration < 0:
-            trend, trend_score = "هابط متسارع", -2
-        elif current_velocity < 0:
-            trend, trend_score = "هابط متباطئ", -1
+        data = resp.json()
+        if 'data' not in data or len(data['data']) == 0:
+            return None
+        
+        current = data['data'][0]
+        value = int(current['value'])
+        classification = current['value_classification']
+        
+        # تحديد التأثير على Score
+        if value <= 25:
+            impact = 2  # خوف شديد = فرصة شراء
+            emoji = "😱"
+        elif value <= 45:
+            impact = 1
+            emoji = "😨"
+        elif value <= 55:
+            impact = 0
+            emoji = "😐"
+        elif value <= 75:
+            impact = -1
+            emoji = "😃"
         else:
-            trend, trend_score = "محايد", 0
+            impact = -2  # طمع شديد = خطر
+            emoji = "🤑"
         
-        return {'velocity': current_velocity, 'acceleration': acceleration, 'trend': trend, 'trend_score': trend_score}
+        result = {
+            'value': value,
+            'classification': classification,
+            'emoji': emoji,
+            'score_impact': impact
+        }
+        
+        set_cached_data(cache_key, result)
+        return result
     except Exception as e:
-        logger.error(f"Differential error: {e}")
+        logger.error(f"Fear & Greed error: {e}")
         return None
 
-def calculate_stochastic_analysis(prices):
+# ==========================================
+# Funding Rate & Open Interest
+# ==========================================
+def get_funding_rate(symbol):
+    """جلب معدل التمويل"""
     try:
-        if not prices or len(prices) < 10:
-            return {'sharpe_ratio': 0, 'var_95': 0}
-        arr = np.array(prices, dtype=float)
-        log_returns = np.diff(np.log(arr))
-        daily_volatility = np.std(log_returns)
-        drift = np.mean(log_returns)
-        sharpe_ratio = (drift - 0.02/252) / daily_volatility if daily_volatility > 0 else 0
-        return {'sharpe_ratio': float(sharpe_ratio), 'var_95': float(np.percentile(log_returns, 5))}
+        mapping = SYMBOL_TO_PROTOCOL.get(symbol)
+        if not mapping or 'binance' not in mapping:
+            return None
+        
+        binance_symbol = mapping['binance']
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/fundingRate"
+        params = {"symbol": binance_symbol, "limit": 1}
+        
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        if not data:
+            return None
+        
+        funding_rate = float(data[0]['fundingRate'])
+        
+        # تأثير على Score
+        if funding_rate > 0.001:
+            impact = -1  # تمويل إيجابي عالي = Longs تدفع = خطر
+        elif funding_rate < -0.001:
+            impact = 1  # تمويل سلبي = Shorts تدفع = فرصة
+        else:
+            impact = 0
+        
+        return {
+            'funding_rate': funding_rate,
+            'funding_rate_pct': funding_rate * 100,
+            'score_impact': impact
+        }
     except Exception as e:
-        logger.error(f"Stochastic error: {e}")
-        return {'sharpe_ratio': 0, 'var_95': 0}
+        logger.error(f"Funding rate error for {symbol}: {e}")
+        return None
 
-def calc_rsi(prices, period=14):
+def get_open_interest(symbol):
+    """جلب العقود المفتوحة"""
     try:
-        if len(prices) < period + 1:
-            return 50.0
-        gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
-        losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
-        avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
-        return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
-    except:
-        return 50.0
+        mapping = SYMBOL_TO_PROTOCOL.get(symbol)
+        if not mapping or 'binance' not in mapping:
+            return None
+        
+        binance_symbol = mapping['binance']
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/openInterest"
+        params = {"symbol": binance_symbol}
+        
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        open_interest = float(data['openInterest'])
+        
+        return {
+            'open_interest': open_interest,
+            'open_interest_formatted': f"{open_interest:,.0f}"
+        }
+    except Exception as e:
+        logger.error(f"Open interest error for {symbol}: {e}")
+        return None
 
-def calc_atr(highs, lows, closes, period=14):
-    try:
-        if len(closes) < period + 1:
-            return closes[-1] * 0.02
-        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
-        return sum(tr) / period
-    except:
-        return closes[-1] * 0.02
-
-def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score, defillama_score=0):
-    score = 0
-    if rsi < 30: score += 3
-    elif rsi > 70: score -= 3
-    if sharpe > 1.0: score += 2
-    elif sharpe < -0.5: score -= 2
-    if smc_score: score += smc_score
-    if smc_zone == 'LOWER_DISCOUNT': score += 2
-    elif smc_zone == 'UPPER_PREMIUM': score -= 2
-    score += diff_trend_score
-    score += defillama_score
-    
-    if score >= 4: return 'شراء قوي', score, 'عالية'
-    elif score >= 1: return 'شراء حذر', score, 'متوسطة'
-    elif score <= -4: return 'بيع قوي', score, 'عالية'
-    elif score <= -1: return 'بيع حذر', score, 'متوسطة'
-    else: return 'انتظار', score, 'منخفضة'
-
+# ==========================================
+# DeFiLlama Analysis (محسّن)
+# ==========================================
 def get_defillama_tvl(slug):
     try:
         url = f"{DEFILLAMA_API}/v2/historicalChainTvl/{slug}"
@@ -424,7 +475,12 @@ def get_defillama_analysis(symbol):
         
         mapping = SYMBOL_TO_PROTOCOL.get(symbol)
         if not mapping:
-            return None
+            # محاولة استخراج اسم العملة
+            if 'USD' in symbol:
+                coin_name = symbol.replace('-USD', '').lower()
+                mapping = {'type': 'chain', 'slug': coin_name, 'binance': symbol.replace('-USD', 'USDT')}
+            else:
+                return None
         
         result = {
             'protocol_info': None,
@@ -433,11 +489,42 @@ def get_defillama_analysis(symbol):
             'recommendation': ''
         }
         
+        # جلب بيانات TVL
         tvl_data = get_defillama_tvl(mapping['slug'])
         if tvl_data:
             result['tvl_data'] = tvl_data
             result['score_impact'] += tvl_data['trend_score']
         
+        # إذا كان chain، اجلب أكبر البروتوكولات
+        if mapping['type'] == 'chain':
+            try:
+                url = f"{DEFILLAMA_API}/protocols/{mapping['slug']}"
+                resp = requests.get(url, timeout=15)
+                if resp.status_code == 200:
+                    protocols = resp.json()
+                    if protocols and len(protocols) > 0:
+                        top_protocols = sorted(protocols, key=lambda x: x.get('tvl', 0), reverse=True)[:3]
+                        total_tvl = sum(p.get('tvl', 0) for p in top_protocols)
+                        
+                        result['protocol_info'] = {
+                            'name': f"Top 3 on {mapping['slug'].title()}",
+                            'category': 'DeFi Ecosystem',
+                            'tvl': total_tvl,
+                            'top_protocols': [p.get('name', '') for p in top_protocols],
+                            'is_safe': True
+                        }
+                        
+                        if total_tvl > 1e9:
+                            result['score_impact'] += 1
+                            result['recommendation'] = f"🟢 نظام بيئي قوي (TVL: ${total_tvl/1e9:.1f}B)"
+                        elif total_tvl > 100e6:
+                            result['recommendation'] = f"🟡 نظام بيئي متوسط (TVL: ${total_tvl/1e6:.0f}M)"
+                        else:
+                            result['recommendation'] = f"🟠 نظام بيئي صغير (TVL: ${total_tvl/1e6:.0f}M)"
+            except Exception as e:
+                logger.error(f"Error fetching protocols: {e}")
+        
+        # إذا كان protocol محدد
         if mapping['type'] == 'protocol':
             protocol_info = get_defillama_protocol(mapping['slug'])
             if protocol_info:
@@ -447,24 +534,108 @@ def get_defillama_analysis(symbol):
                     result['recommendation'] = '⚠️ البروتوكول لديه اختراقات حديثة!'
                 else:
                     result['score_impact'] += 1
-                    result['recommendation'] = '✅ البروتوكول آمن'
+                    result['recommendation'] = f"✅ {protocol_info['name']} آمن (TVL: ${protocol_info['tvl']/1e9:.2f}B)"
         
-        if result['score_impact'] >= 2:
-            result['recommendation'] = '🟢 سيولة قوية ومتنامية'
-        elif result['score_impact'] >= 1:
-            result['recommendation'] = '🟡 سيولة مستقرة'
-        elif result['score_impact'] <= -2:
-            result['recommendation'] = '🔴 سيولة متراجعة - احذر!'
-        elif result['score_impact'] <= -1:
-            result['recommendation'] = '🟠 سيولة ضعيفة'
-        else:
-            result['recommendation'] = '⚪ بيانات غير كافية'
+        # توصية عامة
+        if not result['recommendation']:
+            if result['score_impact'] >= 2:
+                result['recommendation'] = '🟢 سيولة قوية ومتنامية'
+            elif result['score_impact'] >= 1:
+                result['recommendation'] = '🟡 سيولة مستقرة'
+            elif result['score_impact'] <= -2:
+                result['recommendation'] = '🔴 سيولة متراجعة - احذر!'
+            elif result['score_impact'] <= -1:
+                result['recommendation'] = '🟠 سيولة ضعيفة'
+            else:
+                result['recommendation'] = '⚪ بيانات غير كافية'
         
         set_cached_data(cache_key, result)
         return result
     except Exception as e:
         logger.error(f"DeFiLlama analysis error: {e}")
         return None
+
+# ==========================================
+# Analysis Functions
+# ==========================================
+def advanced_differential_analysis(closes):
+    try:
+        if not closes or len(closes) < 10:
+            return None
+        prices = np.array(closes[-20:], dtype=float)
+        velocity = np.diff(prices)
+        current_velocity = float(velocity[-1])
+        acceleration = float(np.diff(velocity)[-1]) if len(velocity) >= 2 else 0.0
+        
+        if current_velocity > 0 and acceleration > 0:
+            trend, trend_score = "صاعد متسارع", 2
+        elif current_velocity > 0:
+            trend, trend_score = "صاعد متباطئ", 1
+        elif current_velocity < 0 and acceleration < 0:
+            trend, trend_score = "هابط متسارع", -2
+        elif current_velocity < 0:
+            trend, trend_score = "هابط متباطئ", -1
+        else:
+            trend, trend_score = "محايد", 0
+        
+        return {'velocity': current_velocity, 'acceleration': acceleration, 'trend': trend, 'trend_score': trend_score}
+    except Exception as e:
+        logger.error(f"Differential error: {e}")
+        return None
+
+def calculate_stochastic_analysis(prices):
+    try:
+        if not prices or len(prices) < 10:
+            return {'sharpe_ratio': 0, 'var_95': 0}
+        arr = np.array(prices, dtype=float)
+        log_returns = np.diff(np.log(arr))
+        daily_volatility = np.std(log_returns)
+        drift = np.mean(log_returns)
+        sharpe_ratio = (drift - 0.02/252) / daily_volatility if daily_volatility > 0 else 0
+        return {'sharpe_ratio': float(sharpe_ratio), 'var_95': float(np.percentile(log_returns, 5))}
+    except Exception as e:
+        logger.error(f"Stochastic error: {e}")
+        return {'sharpe_ratio': 0, 'var_95': 0}
+
+def calc_rsi(prices, period=14):
+    try:
+        if len(prices) < period + 1:
+            return 50.0
+        gains = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
+        losses = [max(-(prices[i] - prices[i-1]), 0) for i in range(-period, 0)]
+        avg_gain, avg_loss = sum(gains)/period, sum(losses)/period
+        return 100.0 - (100.0 / (1.0 + avg_gain / avg_loss)) if avg_loss > 0 else 100.0
+    except:
+        return 50.0
+
+def calc_atr(highs, lows, closes, period=14):
+    try:
+        if len(closes) < period + 1:
+            return closes[-1] * 0.02
+        tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(-period, 0)]
+        return sum(tr) / period
+    except:
+        return closes[-1] * 0.02
+
+def get_recommendation(rsi, sharpe, smc_score, smc_zone, diff_trend_score, defillama_score=0, fear_greed_score=0, funding_score=0):
+    score = 0
+    if rsi < 30: score += 3
+    elif rsi > 70: score -= 3
+    if sharpe > 1.0: score += 2
+    elif sharpe < -0.5: score -= 2
+    if smc_score: score += smc_score
+    if smc_zone == 'LOWER_DISCOUNT': score += 2
+    elif smc_zone == 'UPPER_PREMIUM': score -= 2
+    score += diff_trend_score
+    score += defillama_score
+    score += fear_greed_score
+    score += funding_score
+    
+    if score >= 4: return 'شراء قوي', score, 'عالية'
+    elif score >= 1: return 'شراء حذر', score, 'متوسطة'
+    elif score <= -4: return 'بيع قوي', score, 'عالية'
+    elif score <= -1: return 'بيع حذر', score, 'متوسطة'
+    else: return 'انتظار', score, 'منخفضة'
 
 def calculate_correlation_matrix():
     try:
@@ -633,6 +804,9 @@ def calculate_portfolio_eigenvalues():
     except:
         return None
 
+# ==========================================
+# Unified Analysis
+# ==========================================
 def unified_analysis(symbol, interval="4h"):
     try:
         data = fetch_data(symbol, interval)
@@ -655,12 +829,35 @@ def unified_analysis(symbol, interval="4h"):
             except:
                 pass
         
+        # DeFiLlama
         defillama_data = get_defillama_analysis(symbol)
         defillama_score = defillama_data.get('score_impact', 0) if defillama_data else 0
         
+        # Fear & Greed (للكريبتو فقط)
+        fear_greed_data = None
+        fear_greed_score = 0
+        if symbol in CRYPTO_SYMBOLS:
+            fear_greed_data = get_fear_greed_index()
+            if fear_greed_data:
+                fear_greed_score = fear_greed_data.get('score_impact', 0)
+        
+        # Funding Rate (للكريبتو فقط)
+        funding_data = None
+        funding_score = 0
+        if symbol in CRYPTO_SYMBOLS:
+            funding_data = get_funding_rate(symbol)
+            if funding_data:
+                funding_score = funding_data.get('score_impact', 0)
+        
+        # Open Interest (للكريبتو فقط)
+        oi_data = None
+        if symbol in CRYPTO_SYMBOLS:
+            oi_data = get_open_interest(symbol)
+        
         action, score, conf = get_recommendation(
             rsi, stochastic.get('sharpe_ratio', 0), 
-            smc_score, smc_zone, diff_trend_score, defillama_score
+            smc_score, smc_zone, diff_trend_score, 
+            defillama_score, fear_greed_score, funding_score
         )
         
         if 'شراء' in action:
@@ -681,7 +878,10 @@ def unified_analysis(symbol, interval="4h"):
             'differential': diff_analysis, 'transition_matrix': None,
             'market_predictions': None, 'generating_function': None,
             'correlation_matrix': None, 'portfolio_analysis': None,
-            'defillama': defillama_data
+            'defillama': defillama_data,
+            'fear_greed': fear_greed_data,
+            'funding_rate': funding_data,
+            'open_interest': oi_data
         }
         
         try:
@@ -723,9 +923,14 @@ def ask_qwen_ai(data):
         if data.get('defillama') and data['defillama'].get('recommendation'):
             defi_info = f"DeFiLlama: {data['defillama']['recommendation']}. "
         
+        fg_info = ""
+        if data.get('fear_greed'):
+            fg = data['fear_greed']
+            fg_info = f"الخوف والطمع: {fg['value']} ({fg['classification']}). "
+        
         prompt = (f"أنت محلل تداول محترف. الرمز: {data['symbol']}. السعر: {data['price']}. "
                   f"التوصية: {data['action']}. RSI: {data['rsi']:.1f}. Sharpe: {data['stochastic'].get('sharpe_ratio', 0):.2f}. "
-                  f"المنطقة: {data['smc_zone']}. {diff_info}{pred_info}{defi_info} "
+                  f"المنطقة: {data['smc_zone']}. {diff_info}{pred_info}{defi_info}{fg_info} "
                   f"أعطِ جملة واحدة فقط بالعربية تشرح سبب التوصية. لا تستخدم ** أو # أو أي رموز.")
         
         res = requests.post(
@@ -754,6 +959,9 @@ def ask_qwen_ai(data):
     
     return None
 
+# ==========================================
+# Dashboard HTML
+# ==========================================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -799,6 +1007,9 @@ DASHBOARD_HTML = """
         .hidden { display: none; }
         .loading { text-align: center; padding: 40px; color: #00d2ff; }
         .error { background: rgba(255,23,68,0.1); border: 1px solid rgba(255,23,68,0.3); border-radius: 15px; padding: 25px; text-align: center; color: #ff1744; }
+        .fear-greed-gauge { text-align: center; padding: 20px; }
+        .fear-greed-value { font-size: 3em; font-weight: bold; margin: 10px 0; }
+        .fear-greed-label { font-size: 1.2em; color: #aaa; }
         @media (max-width: 768px) { .control-row { flex-direction: column; } select { width: 100%; } h1 { font-size: 1.8em; } }
     </style>
 </head>
@@ -895,6 +1106,14 @@ DASHBOARD_HTML = """
                     <div class="result-item"><span class="result-label">المنطقة</span><span class="result-value" id="smcZone"></span></div>
                     <div class="result-item"><span class="result-label">العائد/المخاطرة</span><span class="result-value" id="rr"></span></div>
                 </div>
+                <div class="result-card" id="fearGreedCard">
+                    <h3>😱 مؤشر الخوف والطمع</h3>
+                    <div id="fearGreedContent"></div>
+                </div>
+                <div class="result-card" id="fundingCard">
+                    <h3>💹 معدل التمويل</h3>
+                    <div id="fundingContent"></div>
+                </div>
                 <div class="result-card" id="defillamaCard">
                     <h3>🦙 DeFiLlama Analysis</h3>
                     <div id="defillamaContent"></div>
@@ -960,6 +1179,40 @@ DASHBOARD_HTML = """
                 document.getElementById('sharpe').textContent = data.stochastic.sharpe_ratio.toFixed(2);
                 document.getElementById('var95').textContent = (data.stochastic.var_95 * 100).toFixed(2) + '%';
             }
+            
+            // Fear & Greed
+            if (data.fear_greed) {
+                const fg = data.fear_greed;
+                let color = '#ff1744';
+                if (fg.value <= 25) color = '#ff1744';
+                else if (fg.value <= 45) color = '#ff9100';
+                else if (fg.value <= 55) color = '#ffea00';
+                else if (fg.value <= 75) color = '#00e676';
+                else color = '#00c853';
+                
+                let fgHtml = '<div class="fear-greed-gauge">';
+                fgHtml += '<div class="fear-greed-value" style="color:' + color + ';">' + fg.emoji + ' ' + fg.value + '</div>';
+                fgHtml += '<div class="fear-greed-label">' + fg.classification + '</div>';
+                fgHtml += '</div>';
+                document.getElementById('fearGreedContent').innerHTML = fgHtml;
+            } else {
+                document.getElementById('fearGreedCard').innerHTML = '<h3>😱 مؤشر الخوف والطمع</h3><p style="color:#aaa;">غير متوفر</p>';
+            }
+            
+            // Funding Rate
+            if (data.funding_rate) {
+                const fr = data.funding_rate;
+                const color = fr.funding_rate >= 0 ? '#00c853' : '#ff1744';
+                let frHtml = '<div class="result-item"><span class="result-label">معدل التمويل</span><span class="result-value" style="color:' + color + ';">' + fr.funding_rate_pct.toFixed(4) + '%</span></div>';
+                if (data.open_interest) {
+                    frHtml += '<div class="result-item"><span class="result-label">العقود المفتوحة</span><span class="result-value">' + data.open_interest.open_interest_formatted + '</span></div>';
+                }
+                document.getElementById('fundingContent').innerHTML = frHtml;
+            } else {
+                document.getElementById('fundingCard').innerHTML = '<h3>💹 معدل التمويل</h3><p style="color:#aaa;">غير متوفر</p>';
+            }
+            
+            // DeFiLlama
             if (data.defillama) {
                 const dl = data.defillama;
                 let dlHtml = '';
@@ -977,12 +1230,16 @@ DASHBOARD_HTML = """
                 if (dl.protocol_info) {
                     const pi = dl.protocol_info;
                     dlHtml += '<div class="result-item"><span class="result-label">الفئة</span><span class="result-value">' + pi.category + '</span></div>';
+                    if (pi.top_protocols) {
+                        dlHtml += '<div class="result-item"><span class="result-label">أهم البروتوكولات</span><span class="result-value">' + pi.top_protocols.join(', ') + '</span></div>';
+                    }
                     dlHtml += '<div class="result-item"><span class="result-label">الأمان</span><span class="result-value" style="color:' + (pi.is_safe ? '#00c853' : '#ff1744') + ';">' + (pi.is_safe ? '✅ آمن' : '⚠️ مخترق') + '</span></div>';
                 }
                 document.getElementById('defillamaContent').innerHTML = dlHtml || '<p style="color:#aaa;">غير متاحة</p>';
             } else {
-                document.getElementById('defillamaCard').innerHTML = '<h3>🦙 DeFiLlama Analysis</h3><p style="color:#aaa;">غير متاحة لهذه العملة</p>';
+                document.getElementById('defillamaCard').innerHTML = '<h3>🦙 DeFiLlama Analysis</h3><p style="color:#aaa;">غير متاحة</p>';
             }
+            
             if (data.market_predictions) {
                 const predDiv = document.getElementById('predictions');
                 let html = '';
@@ -1117,13 +1374,23 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data.get('defillama') and data['defillama'].get('recommendation'):
             defi_section = f"\n🦙 DeFiLlama: {data['defillama']['recommendation']}\n"
         
+        fg_section = ""
+        if data.get('fear_greed'):
+            fg = data['fear_greed']
+            fg_section = f"\n😱 الخوف والطمع: {fg['value']} ({fg['classification']})\n"
+        
+        funding_section = ""
+        if data.get('funding_rate'):
+            fr = data['funding_rate']
+            funding_section = f"\n💹 معدل التمويل: {fr['funding_rate_pct']:.4f}%\n"
+        
         ai_section = f"\nتحليل الذكاء الاصطناعي:\n{ai_analysis}\n" if ai_analysis else ""
         
         msg = (f"{emoji} {data['symbol']} ({data['interval'].upper()})\n"
                f"السعر: {data['price']:,.2f}\nالتوصية: {data['action']} (Score: {data['score']})\n"
                f"العائد/المخاطرة: 1:{data['rr']:.2f}\n\nمستويات التداول:\n"
                f"SL: {data['sl']:,.2f}\nTP1: {data['tp1']:,.2f}\nTP2: {data['tp2']:,.2f}\nTP3: {data['tp3']:,.2f}\n"
-               f"{diff_section}{defi_section}{ai_section}\nللتفاصيل: {dashboard_url}/dashboard\nهذه ليست نصيحة مالية.")
+               f"{diff_section}{defi_section}{fg_section}{funding_section}{ai_section}\nللتفاصيل: {dashboard_url}/dashboard\nهذه ليست نصيحة مالية.")
         
         await update.message.reply_text(msg)
         
@@ -1149,7 +1416,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Dashboard: {os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'worker-production-7139.up.railway.app')}/dashboard")
 
 def main():
-    logger.info("Starting bot with DeFiLlama integration...")
+    logger.info("Starting bot with enhanced features...")
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask started")
     
