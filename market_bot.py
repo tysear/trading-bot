@@ -1,6 +1,6 @@
 """
-Quant Trading Bot v2
-====================
+Quant Trading Bot v2.1
+======================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
 
@@ -86,6 +86,22 @@ NEWS_QUERIES = {
 ACTIONS = ["شراء قوي", "شراء حذر", "انتظار", "بيع حذر", "بيع قوي"]
 SENTIMENT_LABELS = {-2: "سلبية جداً", -1: "سلبية", 0: "محايدة", 1: "إيجابية", 2: "إيجابية جداً"}
 DISCLAIMER = "⚠️ هذه ليست نصيحة مالية. التحليل أداة مساعدة ولا يضمن نتيجة."
+FNG_AR = {"extreme fear": "خوف شديد", "fear": "خوف", "neutral": "محايد",
+          "greed": "طمع", "extreme greed": "طمع شديد"}
+# عناوين دعائية/تسويقية بلا قيمة للتحليل
+NOISE_RE = re.compile(
+    r"prediction market|price (range|prediction)|to buy for 20|worth more|millionaire|get rich|"
+    r"best (crypto|altcoin)|top \d+ |\b\d+x\b|could (soar|explode|skyrocket)|sponsored|"
+    r"\bby 20(2[7-9]|[3-9]\d)\b|\bfor 20(2[7-9]|[3-9]\d)\b",
+    re.IGNORECASE,
+)
+# عناوين مؤثرة تُقدَّم في الترتيب
+HIGH_IMPACT_RE = re.compile(
+    r"\betf\b|\bsec\b|\bfed\b|federal reserve|rate (cut|hike)|interest rate|inflation|\bcpi\b|fomc|"
+    r"tariff|hack|exploit|lawsuit|\bban\b|outflow|inflow|liquidat|approv|delist|bankrupt|"
+    r"exchange|whale|treasury|stablecoin|discount",
+    re.IGNORECASE,
+)
 
 # ==========================================
 # أدوات عامة
@@ -247,11 +263,14 @@ def compute_indicators(df, interval):
         if base > 0:
             vol_ratio = float(v.iloc[-2] / base)  # آخر شمعة مكتملة
 
-    lookback = min(50, len(df))
+    prior = df.iloc[-51:-1]  # آخر 50 شمعة قبل الحالية، ليظهر الكسر بوضوح
+    price = float(c.iloc[-1])
+    atr = float(atr_wilder(h, l, c).iloc[-1])
+    support, resistance = float(prior["low"].min()), float(prior["high"].max())
     return {
-        "price": float(c.iloc[-1]),
+        "price": price,
         "rsi": float(rsi_wilder(c).iloc[-1]),
-        "atr": float(atr_wilder(h, l, c).iloc[-1]),
+        "atr": atr,
         "ema20": float(ema20.iloc[-1]),
         "ema50": float(ema50.iloc[-1]),
         "macd_hist": float(hist.iloc[-1]),
@@ -259,8 +278,10 @@ def compute_indicators(df, interval):
         "change_1d_pct": change(bpd),
         "change_7d_pct": change(bpd * 7),
         "volume_ratio": vol_ratio,
-        "support_50": float(l.iloc[-lookback:].min()),
-        "resistance_50": float(h.iloc[-lookback:].max()),
+        "support_50": support,
+        "resistance_50": resistance,
+        "dist_to_support_atr": (price - support) / atr if atr > 0 else None,
+        "dist_to_resistance_atr": (resistance - price) / atr if atr > 0 else None,
     }
 
 
@@ -305,6 +326,24 @@ def direction(action):
     return 1 if "شراء" in action else -1 if "بيع" in action else 0
 
 
+def level_guard(action, ind):
+    """لا بيع قرب الدعم ولا شراء قرب المقاومة (أقل من 1 ATR) إلا بعد الكسر."""
+    d, atr = direction(action), ind.get("atr") or 0
+    if d == 0 or atr <= 0:
+        return action, None
+    if d < 0:
+        dist = (ind["price"] - ind["support_50"]) / atr
+        if 0 <= dist < 1.0:
+            return "انتظار", (f"السعر قريب من الدعم ({fmt_price(ind['support_50'])})؛ "
+                              "الأفضل انتظار كسره أو ارتداد ورفض قبل البيع")
+    else:
+        dist = (ind["resistance_50"] - ind["price"]) / atr
+        if 0 <= dist < 1.0:
+            return "انتظار", (f"السعر قريب من المقاومة ({fmt_price(ind['resistance_50'])})؛ "
+                              "الأفضل انتظار كسرها أو رفض وارتداد قبل الشراء")
+    return action, None
+
+
 def trade_levels(action, price, atr):
     d = direction(action)
     if d == 0:
@@ -327,7 +366,9 @@ def get_fear_greed():
     r = http_get("https://api.alternative.me/fng/")
     try:
         item = r.json()["data"][0]
-        return cache_set("fng", {"value": int(item["value"]), "label": item["value_classification"]})
+        label = item["value_classification"]
+        return cache_set("fng", {"value": int(item["value"]), "label": label,
+                                 "label_ar": FNG_AR.get(label.lower(), label)})
     except (AttributeError, KeyError, IndexError, ValueError, TypeError):
         return None
 
@@ -349,6 +390,16 @@ def get_derivatives(symbol):
         out["open_interest"] = float(r.json()["openInterest"])
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
+    if "funding_rate_pct" not in out:  # بديل عند حظر Binance Futures من منطقة السيرفر
+        r = http_get("https://api.bybit.com/v5/market/tickers", {"category": "linear", "symbol": pair})
+        try:
+            item = r.json()["result"]["list"][0]
+            out["funding_rate_pct"] = float(item["fundingRate"]) * 100
+            if "open_interest" not in out:
+                out["open_interest"] = float(item["openInterest"])
+            out["source"] = "Bybit"
+        except (AttributeError, KeyError, IndexError, ValueError, TypeError):
+            pass
     return cache_set(key, out) if out else None
 
 
@@ -433,7 +484,7 @@ def _prepare_news(items, limit, seen):
     now, out = time.time(), []
     for it in items:
         norm = re.sub(r"[^a-z0-9]", "", it["title"].lower())[:60]
-        if not norm or norm in seen:
+        if not norm or norm in seen or NOISE_RE.search(it["title"]):
             continue
         age = (now - it["ts"]) / 3600 if it.get("ts") else None
         if age is not None and age > 72:
@@ -441,7 +492,8 @@ def _prepare_news(items, limit, seen):
         seen.add(norm)
         out.append({"title": it["title"], "source": it["source"],
                     "age_h": round(age, 1) if age is not None else None})
-    out.sort(key=lambda x: x["age_h"] if x["age_h"] is not None else 999)
+    out.sort(key=lambda x: (not HIGH_IMPACT_RE.search(x["title"]),
+                            x["age_h"] if x["age_h"] is not None else 999))
     return out[:limit]
 
 
@@ -493,14 +545,22 @@ SYSTEM_PROMPT = (
     "3. Weigh technicals, derivatives, sentiment, asset news and macro news together, and state "
     "explicitly where they conflict.\n"
     "4. Prefer 'انتظار' when evidence is mixed, stale or thin. Do not be overconfident.\n"
-    "5. Reply with ONLY one JSON object (no markdown) with these keys, all text in Arabic:\n"
+    "5. Respect key levels: technical.dist_to_support_atr and dist_to_resistance_atr are distances "
+    "in ATR units (negative means the level is already broken). Do not recommend selling within "
+    "1 ATR above support, or buying within 1 ATR below resistance; choose 'انتظار' and say which "
+    "break or retest would confirm the move.\n"
+    "6. Prioritize impactful news (ETF flows, central banks, regulation, hacks, exchange issues) "
+    "over generic articles.\n"
+    "7. If the action is 'انتظار', the reasoning must explain why.\n"
+    "8. Reply with ONLY one JSON object (no markdown) with these keys, all text in Arabic:\n"
     '   "action": one of ["شراء قوي","شراء حذر","انتظار","بيع حذر","بيع قوي"],\n'
     '   "confidence": one of ["عالية","متوسطة","منخفضة"],\n'
     '   "news_sentiment": integer from -2 (very negative) to 2 (very positive),\n'
     '   "news_summary": max 2 sentences on what the news implies for this asset,\n'
     '   "reasoning": max 3 sentences combining everything,\n'
     '   "risks": array of up to 3 short strings,\n'
-    '   "invalidation": one sentence: what would invalidate this view.'
+    '   "invalidation": one sentence. If action is "انتظار", state what condition would trigger '
+    'a buy or a sell; otherwise state what would invalidate the view.'
 )
 
 
@@ -618,6 +678,10 @@ def analyze(symbol, interval="4h"):
             final = score_to_action(qscore + adj)
             note = "الذكاء الاصطناعي غير متاح؛ القرار مبني على التحليل الكمي وكلمات الأخبار فقط"
 
+        final, guard_note = level_guard(final, ind)
+        if guard_note:
+            note = f"{note} | {guard_note}" if note else guard_note
+
         return {
             "symbol": symbol,
             "interval": interval,
@@ -659,7 +723,7 @@ button:disabled{opacity:.5}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;margin-bottom:16px}
 .card h3{color:#00d2ff;margin-bottom:12px;font-size:1.05em}
 .row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
-.lbl{color:#aaa}.val{font-weight:bold}
+.lbl{color:#aaa}.val{font-weight:bold}.ltr{direction:ltr;unicode-bidi:isolate}
 .banner{text-align:center;padding:24px;border-radius:14px;font-size:1.5em;font-weight:bold;margin-bottom:16px}
 .buy{background:linear-gradient(135deg,#00c853,#009624)}.sell{background:linear-gradient(135deg,#ff1744,#d50000)}
 .wait{background:linear-gradient(135deg,#ffab00,#ff8f00)}
@@ -689,7 +753,9 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const fmt=p=>p==null?'-':Number(p).toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:p>=1?4:6});
 const token=new URLSearchParams(location.search).get('token')||'';
 const SENT={'-2':'سلبية جداً','-1':'سلبية','0':'محايدة','1':'إيجابية','2':'إيجابية جداً'};
-const row=(l,v,c)=>'<div class="row"><span class="lbl">'+esc(l)+'</span><span class="val"'+(c?' style="color:'+c+'"':'')+'>'+esc(v)+'</span></div>';
+const AR=/[\u0600-\u06FF]/;
+const n=(x,dg)=>x==null?'-':Number(x).toFixed(dg);
+const row=(l,v,c)=>'<div class="row"><span class="lbl">'+esc(l)+'</span><span class="val'+(AR.test(String(v))?'':' ltr')+'"'+(c?' style="color:'+c+'"':'')+'>'+esc(v)+'</span></div>';
 const card=(t,body)=>'<div class="card"><h3>'+esc(t)+'</h3>'+body+'</div>';
 const newsList=a=>a&&a.length?a.map(n=>'<div class="news">'+esc(n.title)+'<small>'+esc(n.source)+(n.age_h!=null?' • قبل '+n.age_h+' ساعة':'')+'</small></div>').join(''):'<p class="lbl">لا توجد أخبار حديثة</p>';
 async function run(){
@@ -711,16 +777,16 @@ function render(d){
   const L=d.levels;
   h+='<div class="grid">';
   h+=card('مستويات الصفقة',L?row('الدخول (السعر الحالي)',fmt(d.price))+row('وقف الخسارة',fmt(L.sl),'#ff1744')+row('الهدف 1 (1R)',fmt(L.tp1),'#00c853')+row('الهدف 2 (2R)',fmt(L.tp2),'#00c853')+row('الهدف 3 (3R)',fmt(L.tp3),'#00c853'):'<p>لا توجد صفقة مقترحة حالياً (انتظار).</p>');
-  h+=card('التحليل الكمي ('+d.quant_score+')',row('توصية كمية',d.quant_action)+row('السعر',fmt(i.price))+row('RSI',i.rsi.toFixed(1))+row('ATR',fmt(i.atr))+row('EMA20 / EMA50',fmt(i.ema20)+' / '+fmt(i.ema50))+row('MACD Hist',i.macd_hist.toFixed(4))+row('دعم / مقاومة (50 شمعة)',fmt(i.support_50)+' / '+fmt(i.resistance_50))+row('تغير يوم',i.change_1d_pct==null?'-':i.change_1d_pct.toFixed(2)+'%')+'<ul>'+d.quant_reasons.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>');
+  h+=card('التحليل الكمي ('+d.quant_score+')',row('توصية كمية',d.quant_action)+row('السعر',fmt(i.price))+row('RSI',n(i.rsi,1))+row('ATR',fmt(i.atr))+row('EMA20 / EMA50',fmt(i.ema20)+' / '+fmt(i.ema50))+row('MACD Hist',n(i.macd_hist,2))+row('دعم / مقاومة',fmt(i.support_50)+' / '+fmt(i.resistance_50))+row('المسافة للدعم / المقاومة (ATR)',n(i.dist_to_support_atr,1)+' / '+n(i.dist_to_resistance_atr,1))+row('تغير يوم',i.change_1d_pct==null?'-':i.change_1d_pct.toFixed(2)+'%')+'<ul>'+d.quant_reasons.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>');
   let ctx='';
-  if(d.fear_greed)ctx+=row('الخوف والطمع',d.fear_greed.value+' ('+d.fear_greed.label+')');
+  if(d.fear_greed)ctx+=row('الخوف والطمع',d.fear_greed.value+' ('+(d.fear_greed.label_ar||d.fear_greed.label)+')');
   if(d.derivatives){if(d.derivatives.funding_rate_pct!=null)ctx+=row('معدل التمويل',d.derivatives.funding_rate_pct.toFixed(4)+'%');if(d.derivatives.open_interest!=null)ctx+=row('العقود المفتوحة',Number(d.derivatives.open_interest).toLocaleString('en-US'));}
   if(d.smc)ctx+=row('SMC',(d.smc.zone||'-')+' ('+d.smc.score+')');
   ctx+=row('مشاعر الأخبار',SENT[String(d.news_sentiment)]||'-');
   h+=card('السياق والمشاعر',ctx);
   h+='</div>';
   if(d.ai){const a=d.ai;
-    h+='<div class="card" style="margin-bottom:16px"><h3>🤖 تحليل الذكاء الاصطناعي</h3><p>'+esc(a.reasoning)+'</p><p><b>الأخبار:</b> '+esc(a.news_summary)+'</p>'+(a.risks.length?'<p><b>المخاطر:</b></p><ul>'+a.risks.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>':'')+(a.invalidation?'<p><b>يبطل التحليل إذا:</b> '+esc(a.invalidation)+'</p>':'')+'</div>';}
+    h+='<div class="card" style="margin-bottom:16px"><h3>🤖 تحليل الذكاء الاصطناعي</h3><p>'+esc(a.reasoning)+'</p><p><b>الأخبار:</b> '+esc(a.news_summary)+'</p>'+(a.risks.length?'<p><b>المخاطر:</b></p><ul>'+a.risks.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>':'')+(a.invalidation?'<p><b>ما الذي يغيّر القرار:</b> '+esc(a.invalidation)+'</p>':'')+'</div>';}
   h+='<div class="grid">'+card('📰 أخبار الأصل',newsList(d.news.asset))+card('🌍 أخبار كلية',newsList(d.news.macro))+'</div>';
   h+='<p class="lbl" style="text-align:center">⚠️ هذه ليست نصيحة مالية.</p>';
   $('out').innerHTML=h;
@@ -745,6 +811,8 @@ def client_ip():
 
 def rate_limited(ip, limit=10, window=60):
     now = time.time()
+    if len(_rate) > 1000:
+        _rate.clear()
     hits = [t for t in _rate.get(ip, []) if now - t < window]
     if len(hits) >= limit:
         _rate[ip] = hits
@@ -832,9 +900,11 @@ def format_signal(d):
                   f"الهدف 3 (3R): {fmt_price(L['tp3'])}"]
     lines += ["", f"التحليل الكمي: {d['quant_action']} ({d['quant_score']:+d})",
               f"RSI {i['rsi']:.0f} | EMA20/50: {'صاعد' if i['ema20'] > i['ema50'] else 'هابط'} | "
-              f"MACD: {'+' if i['macd_hist'] > 0 else '-'}"]
+              f"MACD: {'+' if i['macd_hist'] > 0 else '-'}",
+              f"الدعم / المقاومة: {fmt_price(i['support_50'])} / {fmt_price(i['resistance_50'])}"]
     if d["fear_greed"]:
-        lines.append(f"الخوف والطمع: {d['fear_greed']['value']} ({d['fear_greed']['label']})")
+        fg = d["fear_greed"]
+        lines.append(f"الخوف والطمع: {fg['value']} ({fg.get('label_ar') or fg['label']})")
     if d["derivatives"] and d["derivatives"].get("funding_rate_pct") is not None:
         lines.append(f"معدل التمويل: {d['derivatives']['funding_rate_pct']:.4f}%")
     lines.append(f"مشاعر الأخبار: {SENTIMENT_LABELS.get(d['news_sentiment'], '-')}")
@@ -846,7 +916,7 @@ def format_signal(d):
         if a["risks"]:
             lines += ["", "المخاطر:"] + [f"- {r}" for r in a["risks"]]
         if a["invalidation"]:
-            lines += ["", "يبطل التحليل إذا: " + a["invalidation"]]
+            lines += ["", "ما الذي يغيّر القرار: " + a["invalidation"]]
     link = dashboard_link()
     if link:
         lines += ["", f"التفاصيل: {link}"]
