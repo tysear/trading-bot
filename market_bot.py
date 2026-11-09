@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v2.3.1
+Quant Trading Bot v2.3.2
 ========================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
@@ -561,7 +561,8 @@ SYSTEM_PROMPT = (
     "5. Respect key levels: technical.dist_to_support_atr and dist_to_resistance_atr are distances "
     "in ATR units (negative means the level is already broken). Do not recommend selling within "
     "1 ATR above support, or buying within 1 ATR below resistance; choose 'انتظار' and say which "
-    "break or retest would confirm the move.\n"
+    "break or retest would confirm the move. Direction logic: a break BELOW support confirms a sell; "
+    "a break ABOVE resistance confirms a buy. Never state the opposite.\n"
     "6. Prioritize impactful news (ETF flows, central banks, regulation, hacks, exchange issues) "
     "over generic articles.\n"
     "7. If the action is 'انتظار', the reasoning must explain why.\n"
@@ -573,7 +574,8 @@ SYSTEM_PROMPT = (
     '   "reasoning": max 3 sentences combining everything,\n'
     '   "risks": array of up to 3 short strings,\n'
     '   "invalidation": one sentence. If action is "انتظار", state what condition would trigger '
-    'a buy or a sell; otherwise state what would invalidate the view.'
+    'a buy or a sell (sell on a break below support, buy on a break above resistance); otherwise '
+    'state what would invalidate the view.'
 )
 
 
