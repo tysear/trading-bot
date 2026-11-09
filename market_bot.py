@@ -1,6 +1,6 @@
 """
-Quant Trading Bot v2.2
-======================
+Quant Trading Bot v2.3.1
+========================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
 
@@ -11,6 +11,10 @@ Quant Trading Bot v2.2
   OPENROUTER_MODEL    اختياري (الافتراضي qwen/qwen-2.5-72b-instruct)
   DASHBOARD_TOKEN     اختياري: يحمي الداشبورد و API  (افتح /dashboard?token=...)
   RAILWAY_PUBLIC_DOMAIN  اختياري
+  TRACKER_DB          مسار قاعدة بيانات الإشارات (الافتراضي signals.db). على Railway أضف Volume
+                      واجعله مثلاً /data/signals.db وإلا تُمسح السجلات مع كل نشر جديد
+  AUTO_SCAN           اختياري: فحص تلقائي مثل  XRP-USD:4h,BTC-USD:4h  (يستهلك استدعاءات ذكاء اصطناعي)
+  AUTO_SCAN_HOURS     اختياري: كل كم ساعة يتم الفحص التلقائي (الافتراضي 4)
 
 المكتبات:
   pip install python-telegram-bot flask requests pandas numpy yfinance waitress
@@ -21,10 +25,12 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from contextlib import closing
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import numpy as np
@@ -44,11 +50,7 @@ try:
 except ImportError:
     get_smc_analysis = None
 
-try:
-    from trade_logger import log_trade, get_performance
-except ImportError:
-    log_trade = None
-    get_performance = None
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("quantbot")
@@ -93,6 +95,7 @@ NOISE_RE = re.compile(
     r"prediction market|price (range|prediction)|to buy for 20|worth more|millionaire|get rich|"
     r"predicts|unbelievable|\$\d+(\.\d+)? million|\d+ times|investing move|wash-sale|"
     r"should (americans|you|investors)|i.m making|i.d buy|"
+    r"crypto(currency)? (atms?|machines|kiosks?)|bitcoin atms?|"
     r"best (crypto|altcoin)|top \d+ |\b\d+x\b|could (soar|explode|skyrocket)|sponsored|"
     r"\bby 20(2[7-9]|[3-9]\d)\b|\bfor 20(2[7-9]|[3-9]\d)\b",
     re.IGNORECASE,
@@ -542,6 +545,8 @@ def keyword_sentiment(news):
 # ==========================================
 # الذكاء الاصطناعي: يحلل كل شيء معاً
 # ==========================================
+AI_STATUS = {"error": ""}
+
 SYSTEM_PROMPT = (
     "You are a senior markets analyst. You receive a JSON snapshot for one asset: technical "
     "indicators, a simple quantitative score, derivatives data, market sentiment, asset-specific "
@@ -585,6 +590,7 @@ def _parse_ai_json(text):
 
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
+        AI_STATUS["error"] = "مفتاح OpenRouter غير مضبوط"
         return None
     body = {
         "model": OPENROUTER_MODEL,
@@ -596,15 +602,18 @@ def ask_ai(payload):
         "max_tokens": 800,
     }
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    AI_STATUS["error"] = ""
     for attempt in range(2):
         try:
             res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=60)
             if res.status_code != 200:
                 logger.warning("OpenRouter HTTP %s: %s", res.status_code, res.text[:200])
+                AI_STATUS["error"] = f"HTTP {res.status_code}"
                 continue
             content = res.json()["choices"][0]["message"]["content"]
             data = _parse_ai_json(content)
             if not data:
+                AI_STATUS["error"] = "رد غير مفهوم من النموذج"
                 continue
             action = next((a for a in ACTIONS if a == str(data.get("action", "")).strip()), None)
             if action is None:
@@ -625,6 +634,7 @@ def ask_ai(payload):
             }
         except (requests.RequestException, KeyError, IndexError, ValueError) as e:
             logger.warning("AI attempt %s failed: %s", attempt + 1, e)
+            AI_STATUS["error"] = type(e).__name__
     return None
 
 
@@ -646,7 +656,7 @@ def combine(quant_action, ai):
 # ==========================================
 # التحليل الموحد
 # ==========================================
-def analyze(symbol, interval="4h"):
+def analyze(symbol, interval="4h", source=None):
     try:
         df = fetch_ohlcv(symbol, interval)
         if df is None:
@@ -681,16 +691,16 @@ def analyze(symbol, interval="4h"):
             final, note = combine(qaction, ai)
             news_sentiment = ai["news_sentiment"]
         else:
-            news_sentiment = keyword_sentiment(news)
-            adj = 1 if news_sentiment >= 1 else -1 if news_sentiment <= -1 else 0
-            final = score_to_action(qscore + adj)
-            note = "الذكاء الاصطناعي غير متاح؛ القرار مبني على التحليل الكمي وكلمات الأخبار فقط"
+            news_sentiment = keyword_sentiment(news)  # للعرض فقط ولا يغيّر القرار
+            final = qaction
+            reason = AI_STATUS["error"] or "سبب غير معروف"
+            note = f"الذكاء الاصطناعي غير متاح ({reason})؛ القرار كمي فقط ولم تُسجل إشارة للمتابعة"
 
         final, guard_note = level_guard(final, ind)
         if guard_note:
             note = f"{note} | {guard_note}" if note else guard_note
 
-        return {
+        result = {
             "symbol": symbol,
             "interval": interval,
             "price": ind["price"],
@@ -708,9 +718,330 @@ def analyze(symbol, interval="4h"):
             "ai": ai,
             "note": note,
         }
+        if source and ai:  # لا نسجل إلا الإشارات التي حللها الذكاء الاصطناعي
+            result["signal_id"] = record_signal(result, source)
+        return result
     except Exception:
         logger.exception("Analysis failed for %s", symbol)
         return None
+
+
+# ==========================================
+# متابعة الإشارات (Signal Tracker)
+# ==========================================
+TRACKER_DB = os.environ.get("TRACKER_DB", "signals.db")
+AUTO_SCAN = [x.strip() for x in os.environ.get("AUTO_SCAN", "").split(",") if x.strip()]
+try:
+    AUTO_SCAN_HOURS = max(0.5, float(os.environ.get("AUTO_SCAN_HOURS", "4")))
+except ValueError:
+    AUTO_SCAN_HOURS = 4.0
+# المدة القصوى لبقاء الإشارة مفتوحة حسب الفريم (بالساعات)
+EXPIRY_HOURS = {"15m": 24, "1h": 48, "4h": 96, "1d": 360}
+OUTCOME_AR = {"sl": "وقف الخسارة", "tp1_then_sl": "الهدف 1 ثم وقف", "tp2_then_sl": "الهدف 2 ثم وقف",
+              "tp3": "الهدف 3", "expired": "انتهت المدة", "no_data": "بلا بيانات"}
+SIGNAL_COLUMNS = ("created_at", "symbol", "interval", "action", "direction", "entry", "sl", "tp1", "tp2", "tp3",
+                  "atr", "quant_score", "confidence", "news_sentiment", "ai_used", "source")
+_db_lock = threading.Lock()
+_eval_lock = threading.Lock()
+_db_ready = False
+
+
+def db_connect():
+    folder = os.path.dirname(TRACKER_DB)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    conn = sqlite3.connect(TRACKER_DB, timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with _db_lock, closing(db_connect()) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS signals ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, symbol TEXT NOT NULL, "
+            "interval TEXT NOT NULL, action TEXT NOT NULL, direction INTEGER NOT NULL, entry REAL NOT NULL, "
+            "sl REAL NOT NULL, tp1 REAL NOT NULL, tp2 REAL NOT NULL, tp3 REAL NOT NULL, atr REAL, "
+            "quant_score INTEGER, confidence TEXT, news_sentiment INTEGER, ai_used INTEGER, source TEXT, "
+            "status TEXT NOT NULL DEFAULT 'open', outcome TEXT, highest_tp INTEGER NOT NULL DEFAULT 0, "
+            "exit_price REAL, r_multiple REAL, closed_at REAL, last_checked REAL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
+        conn.commit()
+
+
+def _ensure_db():
+    global _db_ready
+    if not _db_ready:
+        init_db()
+        _db_ready = True
+
+
+def record_signal(d, source="manual"):
+    # تسجيل الإشارة القابلة للتنفيذ فقط (شراء/بيع)، وتجاهل المكرر المفتوح لنفس الرمز والفريم والاتجاه
+    levels, dr = d.get("levels"), direction(d["action"])
+    if not levels or dr == 0:
+        return None
+    try:
+        _ensure_db()
+        with _db_lock, closing(db_connect()) as conn:
+            dup = conn.execute(
+                "SELECT id FROM signals WHERE status='open' AND symbol=? AND interval=? AND direction=?",
+                (d["symbol"], d["interval"], dr)).fetchone()
+            if dup:
+                return None
+            values = (time.time(), d["symbol"], d["interval"], d["action"], dr, d["price"],
+                      levels["sl"], levels["tp1"], levels["tp2"], levels["tp3"], d["indicators"]["atr"],
+                      d["quant_score"], (d["ai"] or {}).get("confidence"), d["news_sentiment"],
+                      1 if d["ai"] else 0, source)
+            cur = conn.execute(
+                f"INSERT INTO signals ({', '.join(SIGNAL_COLUMNS)}) VALUES ({', '.join('?' * len(SIGNAL_COLUMNS))})",
+                values)
+            conn.commit()
+            return cur.lastrowid
+    except sqlite3.Error as e:
+        logger.warning("record_signal failed: %s", e)
+        return None
+
+
+def _path_df(rows):
+    df = pd.DataFrame(rows).iloc[:, :6]
+    df.columns = ["time", "open", "high", "low", "close", "volume"]
+    for col in ["high", "low", "close"]:
+        df[col] = df[col].astype(float)
+    df.index = pd.to_datetime(df["time"], unit="ms", utc=True)
+    return df[["high", "low", "close"]]
+
+
+def fetch_path(symbol, since_ts):
+    # شموع 15 دقيقة التي تبدأ بعد لحظة الإشارة (لتفادي النظر للشمعة التي صدرت فيها الإشارة)
+    empty = pd.DataFrame(columns=["high", "low", "close"])
+    if is_crypto(symbol):
+        pair, rows, start = symbol[:-4] + "USDT", [], int(since_ts * 1000)
+        for _ in range(5):
+            r = None
+            for host in BINANCE_SPOT_HOSTS:
+                r = http_get(f"{host}/api/v3/klines",
+                             {"symbol": pair, "interval": "15m", "startTime": start, "limit": 1000})
+                if r is not None:
+                    break
+            if r is None:
+                return _path_df(rows) if rows else None
+            try:
+                batch = r.json()
+            except ValueError:
+                return None
+            if not isinstance(batch, list) or not batch:
+                break
+            rows += batch
+            if len(batch) < 1000:
+                break
+            start = batch[-1][0] + 1
+        return _path_df(rows) if rows else empty
+    if yf is None:
+        return None
+    try:
+        raw = yf.Ticker(symbol).history(period="60d", interval="15m")
+        if raw is None or raw.empty:
+            return None
+        df = raw.rename(columns=str.lower)[["high", "low", "close"]]
+        df = df[df.index >= pd.Timestamp(since_ts, unit="s", tz="UTC")]
+        return df if len(df) else empty
+    except Exception as e:
+        logger.warning("fetch_path yfinance error for %s: %s", symbol, e)
+        return None
+
+
+def resolve_signal(sig, candles, now=None):
+    # تمشي على الشموع بالترتيب: الوقف أولاً عند التلامس في نفس الشمعة (تحفظ)، وتُغلق عند الوقف أو الهدف 3 أو الانتهاء
+    now = now or time.time()
+    d, entry, sl = sig["direction"], sig["entry"], sig["sl"]
+    tps = (sig["tp1"], sig["tp2"], sig["tp3"])
+    risk = abs(entry - sl)
+    highest = int(sig.get("highest_tp") or 0)
+
+    def done(outcome, exit_price, hi, r, ts):
+        return {"closed": True, "outcome": outcome, "highest_tp": hi, "exit_price": exit_price,
+                "r": r, "closed_at": ts}
+
+    if risk <= 0:
+        return done("no_data", entry, highest, None, now)
+    last_close = None
+    if candles is not None and len(candles):
+        for ts, hi, lo in zip(candles.index, candles["high"], candles["low"]):
+            if (lo <= sl) if d > 0 else (hi >= sl):
+                outcome = "sl" if highest == 0 else f"tp{highest}_then_sl"
+                return done(outcome, sl, highest, -1.0, ts.timestamp())
+            while highest < 3 and ((hi >= tps[highest]) if d > 0 else (lo <= tps[highest])):
+                highest += 1
+            if highest == 3:
+                return done("tp3", tps[2], 3, 3.0, ts.timestamp())
+        last_close = float(candles["close"].iloc[-1])
+    if now >= sig["created_at"] + EXPIRY_HOURS.get(sig["interval"], 96) * 3600:
+        if last_close is None:
+            return done("no_data", entry, highest, None, now)
+        return done("expired", last_close, highest, d * (last_close - entry) / risk, now)
+    return {"closed": False, "highest_tp": highest}
+
+
+def notify(text):
+    if not TELEGRAM_TOKEN:
+        return
+    for chat_id in ALLOWED_IDS:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                          json={"chat_id": chat_id, "text": text[:4000]}, timeout=15)
+        except requests.RequestException:
+            logger.warning("Telegram notification failed")
+
+
+def format_outcome(sig, res):
+    name = OUTCOME_AR.get(res["outcome"], res["outcome"])
+    r_txt = f"{res['r']:+.2f}R" if res["r"] is not None else "-"
+    return (f"📌 تحديث إشارة #{sig['id']}: {sig['symbol']} ({sig['interval'].upper()}) {sig['action']}\n"
+            f"النتيجة: {name}\n"
+            f"الدخول: {fmt_price(sig['entry'])} | الخروج: {fmt_price(res['exit_price'])}\n"
+            f"الناتج: {r_txt}")
+
+
+def evaluate_open_signals():
+    _ensure_db()
+    resolved = []
+    with _eval_lock:
+        with _db_lock, closing(db_connect()) as conn:
+            sigs = [dict(r) for r in conn.execute("SELECT * FROM signals WHERE status='open'")]
+        for sig in sigs:
+            candles = fetch_path(sig["symbol"], sig["created_at"])
+            if candles is None:
+                if time.time() - sig["created_at"] < 30 * 86400:
+                    continue  # فشل جلب مؤقت: نعيد المحاولة لاحقاً
+                candles = pd.DataFrame(columns=["high", "low", "close"])
+            res = resolve_signal(sig, candles)
+            now = time.time()
+            with _db_lock, closing(db_connect()) as conn:
+                if res["closed"]:
+                    conn.execute(
+                        "UPDATE signals SET status='closed', outcome=?, highest_tp=?, exit_price=?, "
+                        "r_multiple=?, closed_at=?, last_checked=? WHERE id=?",
+                        (res["outcome"], res["highest_tp"], res["exit_price"], res["r"], res["closed_at"],
+                         now, sig["id"]))
+                    resolved.append((sig, res))
+                else:
+                    conn.execute("UPDATE signals SET highest_tp=?, last_checked=? WHERE id=?",
+                                 (res["highest_tp"], now, sig["id"]))
+                conn.commit()
+    for sig, res in resolved:
+        notify(format_outcome(sig, res))
+    return len(resolved)
+
+
+def get_recent(limit=10):
+    _ensure_db()
+    with _db_lock, closing(db_connect()) as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?", (int(limit),))]
+
+
+def get_stats(symbol=None):
+    _ensure_db()
+    query, params = "SELECT * FROM signals", ()
+    if symbol:
+        query, params = query + " WHERE symbol=?", (symbol,)
+    with _db_lock, closing(db_connect()) as conn:
+        rows = [dict(r) for r in conn.execute(query + " ORDER BY created_at DESC", params)]
+    closed = [r for r in rows if r["status"] == "closed" and r["outcome"] != "no_data"]
+    rs = [r["r_multiple"] for r in closed if r["r_multiple"] is not None]
+
+    def side(dr):
+        sub = [r for r in closed if r["direction"] == dr]
+        sub_r = [r["r_multiple"] for r in sub if r["r_multiple"] is not None]
+        return {"n": len(sub), "tp1": sum(1 for r in sub if r["highest_tp"] >= 1),
+                "avg_r": sum(sub_r) / len(sub_r) if sub_r else 0.0}
+
+    return {
+        "total": len(rows),
+        "open": sum(1 for r in rows if r["status"] == "open"),
+        "closed": len(closed),
+        "tp1": sum(1 for r in closed if r["highest_tp"] >= 1),
+        "tp2": sum(1 for r in closed if r["highest_tp"] >= 2),
+        "tp3": sum(1 for r in closed if r["highest_tp"] >= 3),
+        "sl_first": sum(1 for r in closed if r["outcome"] == "sl"),
+        "avg_r": sum(rs) / len(rs) if rs else 0.0,
+        "total_r": sum(rs),
+        "buy": side(1),
+        "sell": side(-1),
+        "recent": [{k: r[k] for k in ("id", "symbol", "interval", "action", "status", "outcome",
+                                       "r_multiple", "highest_tp", "entry", "created_at")}
+                   for r in rows[:10]],
+    }
+
+
+def _pct(a, n):
+    return f"{100 * a / n:.0f}% ({a}/{n})" if n else "-"
+
+
+def format_stats(s, symbol=None):
+    lines = ["📊 أداء التوصيات" + (f" ({symbol})" if symbol else ""),
+             f"إجمالي الإشارات: {s['total']} (مفتوحة {s['open']}، مغلقة {s['closed']})"]
+    n = s["closed"]
+    if n:
+        lines += [f"بلغت الهدف 1 (1R) قبل الوقف: {_pct(s['tp1'], n)}",
+                  f"بلغت الهدف 2 (2R): {_pct(s['tp2'], n)}",
+                  f"بلغت الهدف 3 (3R): {_pct(s['tp3'], n)}",
+                  f"أُوقفت قبل الهدف 1: {_pct(s['sl_first'], n)}",
+                  f"متوسط R: {s['avg_r']:+.2f} | المجموع: {s['total_r']:+.1f}R"]
+        for key, label in (("buy", "شراء"), ("sell", "بيع")):
+            side = s[key]
+            if side["n"]:
+                lines.append(f"{label}: {side['n']} إشارة | الهدف 1: {_pct(side['tp1'], side['n'])} "
+                             f"| متوسط R: {side['avg_r']:+.2f}")
+        if n < 30:
+            lines.append("\n⚠️ العينة صغيرة (أقل من 30 إشارة مغلقة)، لا تعتمد على هذه النسب بعد.")
+    else:
+        lines.append("لا توجد إشارات مغلقة بعد. تُغلق الإشارة عند بلوغ الوقف أو الهدف 3 أو انتهاء مدتها.")
+    lines += ["", "R = ناتج الصفقة بوحدة المخاطرة (وقف الخسارة = -1R). الدخول عند سعر الإشارة، "
+                  "وعند تلامس الوقف والهدف في نفس الشمعة يُحتسب الوقف."]
+    return "\n".join(lines)
+
+
+def format_recent(rows):
+    if not rows:
+        return "لا توجد إشارات مسجلة بعد."
+    lines = ["🧾 آخر الإشارات:"]
+    for r in rows:
+        when = datetime.fromtimestamp(r["created_at"], timezone.utc).strftime("%m-%d %H:%M")
+        if r["status"] == "open":
+            state = f"مفتوحة (بلغت الهدف {r['highest_tp']})" if r["highest_tp"] else "مفتوحة"
+        else:
+            state = OUTCOME_AR.get(r["outcome"], r["outcome"])
+            if r["r_multiple"] is not None:
+                state += f" {r['r_multiple']:+.1f}R"
+        lines.append(f"#{r['id']} {r['symbol']} {r['interval'].upper()} {r['action']} "
+                     f"@ {fmt_price(r['entry'])} | {when} UTC | {state}")
+    return "\n".join(lines)
+
+
+def tracker_loop():
+    # خيط خلفي: يقيّم الإشارات المفتوحة كل 15 دقيقة، ويجري الفحص التلقائي إن فُعّل
+    last_scan = 0.0
+    time.sleep(30)
+    while True:
+        try:
+            evaluate_open_signals()
+        except Exception:
+            logger.exception("Signal evaluation failed")
+        try:
+            if AUTO_SCAN and time.time() - last_scan >= AUTO_SCAN_HOURS * 3600:
+                last_scan = time.time()
+                for item in AUTO_SCAN:
+                    sym, _, tf = item.partition(":")
+                    sym, tf = normalize_symbol(sym), (tf or "4h").lower()
+                    if SYMBOL_RE.match(sym) and tf in VALID_INTERVALS:
+                        res = analyze(sym, tf, source="auto")
+                        if res and res.get("signal_id"):
+                            notify(format_signal(res))
+        except Exception:
+            logger.exception("Auto scan failed")
+        time.sleep(900)
 
 
 # ==========================================
@@ -754,7 +1085,8 @@ ul{padding-right:18px}li{margin:4px 0}p{line-height:1.7}
 <select id="tf"><option value="15m">15m</option><option value="1h">1h</option><option value="4h" selected>4h</option><option value="1d">1d</option></select>
 <button id="btn" onclick="run()">تحليل</button></div>
 <div id="status" class="msg hidden"></div>
-<div id="out" class="hidden"></div></div>
+<div id="out" class="hidden"></div>
+<div id="perf" style="margin-top:16px"></div></div>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -766,6 +1098,24 @@ const n=(x,dg)=>x==null?'-':Number(x).toFixed(dg);
 const row=(l,v,c)=>'<div class="row"><span class="lbl">'+esc(l)+'</span><span class="val'+(AR.test(String(v))?'':' ltr')+'"'+(c?' style="color:'+c+'"':'')+'>'+esc(v)+'</span></div>';
 const card=(t,body)=>'<div class="card"><h3>'+esc(t)+'</h3>'+body+'</div>';
 const newsList=a=>a&&a.length?a.map(n=>'<div class="news">'+esc(n.title)+'<small>'+esc(n.source)+(n.age_h!=null?' • قبل '+n.age_h+' ساعة':'')+'</small></div>').join(''):'<p class="lbl">لا توجد أخبار حديثة</p>';
+const OUT={'sl':'وقف الخسارة','tp1_then_sl':'هدف 1 ثم وقف','tp2_then_sl':'هدف 2 ثم وقف','tp3':'الهدف 3','expired':'انتهت المدة','no_data':'بلا بيانات'};
+async function loadPerf(){
+  try{
+    const r=await fetch('/api/stats',{headers:{'X-Token':token}});
+    if(!r.ok)return;
+    const s=await r.json();
+    const pct=(a,m)=>m?Math.round(100*a/m)+'% ('+a+'/'+m+')':'-';
+    let h=row('إجمالي الإشارات',s.total+' (مفتوحة '+s.open+'، مغلقة '+s.closed+')');
+    if(s.closed){
+      h+=row('بلغت الهدف 1 قبل الوقف',pct(s.tp1,s.closed),'#00c853')+row('بلغت الهدف 2',pct(s.tp2,s.closed))+row('بلغت الهدف 3',pct(s.tp3,s.closed))+row('أُوقفت قبل الهدف 1',pct(s.sl_first,s.closed),'#ff1744')+row('متوسط R / المجموع',n(s.avg_r,2)+' / '+n(s.total_r,1));
+      if(s.closed<30)h+='<p class="lbl">⚠️ عينة صغيرة (أقل من 30 إشارة مغلقة): لا تعتمد على النسب بعد.</p>';
+    }
+    if(s.recent&&s.recent.length){
+      h+='<p class="lbl" style="margin-top:12px">آخر الإشارات</p>'+s.recent.map(x=>row('#'+x.id+' '+x.symbol+' '+x.interval+' • '+x.action,x.status==='open'?'مفتوحة':(OUT[x.outcome]||x.outcome)+(x.r_multiple==null?'':' ('+n(x.r_multiple,1)+'R)'))).join('');
+    }
+    $('perf').innerHTML=card('📈 سجل الأداء',h);
+  }catch(e){}
+}
 async function run(){
   const btn=$('btn'),st=$('status'),out=$('out');
   btn.disabled=true;out.classList.add('hidden');st.className='msg';st.textContent='جاري التحليل (قد يستغرق دقيقة)...';
@@ -774,7 +1124,7 @@ async function run(){
       body:JSON.stringify({symbol:$('symbol').value,timeframe:$('tf').value})});
     const d=await r.json();
     if(!r.ok||d.error){st.className='msg err';st.textContent=d.error||'خطأ';}
-    else{st.className='hidden';render(d);out.classList.remove('hidden');}
+    else{st.className='hidden';render(d);out.classList.remove('hidden');loadPerf();}
   }catch(e){st.className='msg err';st.textContent='حدث خطأ في الاتصال';}
   finally{btn.disabled=false;}
 }
@@ -782,6 +1132,7 @@ function render(d){
   const cls=d.action.includes('شراء')?'buy':d.action.includes('بيع')?'sell':'wait';
   const i=d.indicators;let h='<div class="banner '+cls+'">'+esc(d.action)+(d.ai?' • ثقة '+esc(d.ai.confidence):'')+'</div>';
   if(d.note)h+='<div class="note">'+esc(d.note)+'</div>';
+  if(d.signal_id)h+='<div class="note">📌 سُجلت للمتابعة (#'+d.signal_id+')</div>';
   const L=d.levels;
   h+='<div class="grid">';
   h+=card('مستويات الصفقة',L?row('الدخول (السعر الحالي)',fmt(d.price))+row('وقف الخسارة',fmt(L.sl),'#ff1744')+row('الهدف 1 (1R)',fmt(L.tp1),'#00c853')+row('الهدف 2 (2R)',fmt(L.tp2),'#00c853')+row('الهدف 3 (3R)',fmt(L.tp3),'#00c853'):'<p>لا توجد صفقة مقترحة حالياً (انتظار).</p>');
@@ -799,6 +1150,7 @@ function render(d){
   h+='<p class="lbl" style="text-align:center">⚠️ هذه ليست نصيحة مالية.</p>';
   $('out').innerHTML=h;
 }
+loadPerf();
 </script></body></html>"""
 
 app = Flask(__name__)
@@ -858,10 +1210,25 @@ def api_analyze():
     tf = str(body.get("timeframe", "4h")).lower()
     if not SYMBOL_RE.match(symbol) or tf not in VALID_INTERVALS:
         return jsonify({"error": "رمز أو فريم غير صالح"}), 400
-    result = analyze(symbol, tf)
+    result = analyze(symbol, tf, source="dashboard")
     if not result:
         return jsonify({"error": f"فشل تحليل {symbol}"}), 400
     return jsonify(clean(result))
+
+
+@app.route("/api/stats")
+def api_stats():
+    if not authorized():
+        return jsonify({"error": "غير مصرح"}), 401
+    if rate_limited(client_ip(), limit=30):
+        return jsonify({"error": "عدد الطلبات كبير"}), 429
+    symbol = request.args.get("symbol", "").strip().upper()
+    symbol = symbol if symbol and SYMBOL_RE.match(symbol) else None
+    try:
+        return jsonify(clean(get_stats(symbol)))
+    except Exception:
+        logger.exception("stats failed")
+        return jsonify({"error": "تعذر جلب الإحصائيات"}), 500
 
 
 def run_flask():
@@ -928,6 +1295,8 @@ def format_signal(d):
     link = dashboard_link()
     if link:
         lines += ["", f"التفاصيل: {link}"]
+    if d.get("signal_id"):
+        lines.append(f"📌 سُجلت للمتابعة (#{d['signal_id']})، وتظهر نتيجتها في /stats")
     lines += ["", DISCLAIMER]
     return "\n".join(lines)[:4000]
 
@@ -946,18 +1315,11 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if interval not in VALID_INTERVALS:
         interval = "4h"
     await update.message.reply_text(f"جاري تحليل {symbol} (أسعار + أخبار + ذكاء اصطناعي)...")
-    data = await asyncio.to_thread(analyze, symbol, interval)
+    data = await asyncio.to_thread(analyze, symbol, interval, "telegram")
     if not data:
         await update.message.reply_text(f"فشل تحليل {symbol}. تأكد من الرمز وحاول لاحقاً.")
         return
     await update.message.reply_text(format_signal(data))
-    if log_trade and direction(data["action"]) != 0 and data["levels"]:
-        try:
-            L = data["levels"]
-            log_trade(symbol=data["symbol"], action=data["action"], price=data["price"],
-                      score=data["quant_score"], tp1=L["tp1"], tp2=L["tp2"], tp3=L["tp3"], sl=L["sl"])
-        except Exception as e:
-            logger.warning("log_trade failed: %s", e)
 
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -980,23 +1342,35 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "بوت التداول الكمي v2\n\nالأوامر:\n/smart <رمز> [فريم]  تحليل كامل\n"
-        "/news <رمز>  آخر الأخبار\n/stats  إحصائيات الصفقات\n/dashboard  الداشبورد\n\n" + DISCLAIMER)
+        "/news <رمز>  آخر الأخبار\n/stats [رمز]  أداء التوصيات\n/signals  آخر الإشارات\n/dashboard  الداشبورد\n\n" + DISCLAIMER)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
-    if get_performance is None:
-        await update.message.reply_text("إحصائيات غير متاحة")
+    symbol = normalize_symbol(context.args[0]) if context.args else None
+    if symbol and not SYMBOL_RE.match(symbol):
+        await update.message.reply_text("رمز غير صالح.")
+        return
+    await update.message.reply_text("جاري تحديث نتائج الإشارات المفتوحة...")
+    try:
+        await asyncio.to_thread(evaluate_open_signals)
+        stats = await asyncio.to_thread(get_stats, symbol)
+        await update.message.reply_text(format_stats(stats, symbol)[:4000])
+    except Exception:
+        logger.exception("stats command failed")
+        await update.message.reply_text("تعذر جلب الإحصائيات")
+
+
+async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
         return
     try:
-        s = get_performance()
-        await update.message.reply_text(
-            f"الإجمالي: {s.get('total', 0)}\nالرابحة: {s.get('wins', 0)}\n"
-            f"الخاسرة: {s.get('losses', 0)}\nنسبة النجاح: {s.get('win_rate', 0)}%")
-    except Exception as e:
-        logger.warning("stats failed: %s", e)
-        await update.message.reply_text("تعذر جلب الإحصائيات")
+        rows = await asyncio.to_thread(get_recent, 10)
+        await update.message.reply_text(format_recent(rows)[:4000])
+    except Exception:
+        logger.exception("signals command failed")
+        await update.message.reply_text("تعذر جلب الإشارات")
 
 
 async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1015,12 +1389,16 @@ def main():
         raise SystemExit("TELEGRAM_TOKEN غير مضبوط")
     if not OPENROUTER_API_KEY:
         logger.warning("OPENROUTER_API_KEY غير مضبوط: سيعمل البوت بدون تحليل الذكاء الاصطناعي")
+    _ensure_db()
+    logger.info("Signal tracker DB: %s", os.path.abspath(TRACKER_DB))
     threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=tracker_loop, daemon=True).start()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CommandHandler("news", news_command))
     application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("signals", signals_command))
     application.add_handler(CommandHandler("dashboard", dashboard_command))
     application.add_error_handler(error_handler)
     logger.info("Bot started")
