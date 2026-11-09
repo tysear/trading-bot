@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v2.1
+Quant Trading Bot v2.2
 ======================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
@@ -91,6 +91,8 @@ FNG_AR = {"extreme fear": "خوف شديد", "fear": "خوف", "neutral": "مح�
 # عناوين دعائية/تسويقية بلا قيمة للتحليل
 NOISE_RE = re.compile(
     r"prediction market|price (range|prediction)|to buy for 20|worth more|millionaire|get rich|"
+    r"predicts|unbelievable|\$\d+(\.\d+)? million|\d+ times|investing move|wash-sale|"
+    r"should (americans|you|investors)|i.m making|i.d buy|"
     r"best (crypto|altcoin)|top \d+ |\b\d+x\b|could (soar|explode|skyrocket)|sponsored|"
     r"\bby 20(2[7-9]|[3-9]\d)\b|\bfor 20(2[7-9]|[3-9]\d)\b",
     re.IGNORECASE,
@@ -153,7 +155,7 @@ def fmt_price(p):
     if p is None:
         return "-"
     p = float(p)
-    decimals = 2 if abs(p) >= 1000 else 4 if abs(p) >= 1 else 6
+    decimals = 2 if abs(p) >= 100 else 4 if abs(p) >= 1 else 6
     return f"{p:,.{decimals}f}"
 
 
@@ -481,7 +483,7 @@ def news_yfinance(symbol):
 
 
 def _prepare_news(items, limit, seen):
-    now, out = time.time(), []
+    now, out, sigs = time.time(), [], []
     for it in items:
         norm = re.sub(r"[^a-z0-9]", "", it["title"].lower())[:60]
         if not norm or norm in seen or NOISE_RE.search(it["title"]):
@@ -489,6 +491,12 @@ def _prepare_news(items, limit, seen):
         age = (now - it["ts"]) / 3600 if it.get("ts") else None
         if age is not None and age > 72:
             continue
+        core = it["title"].rsplit(" - ", 1)[0].lower()
+        words = set(re.findall(r"[a-z0-9]{3,}", core))
+        nums = {x for x in re.findall(r"\d{3,}", core) if not 2020 <= int(x) <= 2035}
+        if any(len(words & w) / max(1, len(words | w)) >= 0.4 or len(nums & n2) >= 2 for w, n2 in sigs):
+            continue
+        sigs.append((words, nums))
         seen.add(norm)
         out.append({"title": it["title"], "source": it["source"],
                     "age_h": round(age, 1) if age is not None else None})
@@ -750,7 +758,7 @@ ul{padding-right:18px}li{margin:4px 0}p{line-height:1.7}
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt=p=>p==null?'-':Number(p).toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:p>=1?4:6});
+const fmt=p=>p==null?'-':Number(p).toLocaleString('en-US',{maximumFractionDigits:p>=100?2:p>=1?4:6});
 const token=new URLSearchParams(location.search).get('token')||'';
 const SENT={'-2':'سلبية جداً','-1':'سلبية','0':'محايدة','1':'إيجابية','2':'إيجابية جداً'};
 const AR=/[\u0600-\u06FF]/;
