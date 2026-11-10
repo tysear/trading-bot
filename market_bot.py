@@ -78,7 +78,7 @@ def black_scholes_pricing(S, K, T, r, sigma, option_type="call"):
     return float(price), float(delta), float(gamma), float(theta), float(vega)
 
 # ==========================================
-# أدوات عامة
+# أدوات عامة والأخبار
 # ==========================================
 _cache = {}
 _cache_lock = threading.Lock()
@@ -95,7 +95,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.1)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.3)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -121,6 +121,39 @@ def fmt_price(p):
     p = float(p)
     decimals = 2 if abs(p) >= 100 else 4 if abs(p) >= 1 else 6
     return f"{p:,.{decimals}f}"
+
+def news_google(query, limit):
+    r = http_get("https://news.google.com/rss/search", {"q": f"{query} when:2d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    if r is None: return []
+    try: root = ET.fromstring(r.content)
+    except ET.ParseError: return []
+    items = []
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        if title: items.append({"title": title, "link": link, "source": (it.findtext("source") or "Google News").strip()})
+        if len(items) >= limit: break
+    return items
+
+def get_news(symbol):
+    key = f"news_{symbol}"
+    cached = cache_get(key, 600)
+    if cached is not None: return cached
+    asset = news_google(f"{symbol} crypto" if is_crypto(symbol) else f"{symbol} stock", 4)
+    macro = news_google("Federal Reserve OR inflation", 3)
+    result = {"asset": asset, "macro": macro}
+    return cache_set(key, result)
+
+def get_fear_greed():
+    cached = cache_get("fng", 3600)
+    if cached: return cached
+    r = http_get("https://api.alternative.me/fng/")
+    try:
+        item = r.json()["data"][0]
+        label = item["value_classification"]
+        return cache_set("fng", {"value": int(item["value"]), "label": label, "label_ar": FNG_AR.get(label.lower(), label)})
+    except Exception:
+        return None
 
 # ==========================================
 # جلب البيانات والمؤشرات (التفاضل والتكامل)
@@ -205,11 +238,9 @@ def compute_indicators(df, interval):
     acceleration = float(np.diff(np.diff(c.iloc[-5:].values))[-1]) if len(c) >= 6 else 0.0
     cvar_val = calculate_cvar_risk(c.tolist())
 
-    # حساب التقلب التاريخي لنموذج بلاك-شولز
     returns = np.diff(np.log(c.values[-30:]))
     historical_vol = float(np.std(returns) * math.sqrt(365)) if len(returns) > 10 else 0.60
 
-    # تطبيق بلاك-شولز (Strike افتراضي عند السعر الحالي، ومدة 30 يوماً / سنة)
     bs_call, bs_delta, bs_gamma, bs_theta, bs_vega = black_scholes_pricing(
         S=price, K=price, T=30/365.0, r=0.05, sigma=max(historical_vol, 0.1), option_type="call"
     )
@@ -254,49 +285,17 @@ def trade_levels(action, price, atr):
         "tp3": price + d * 4.5 * atr,
     }
 
-def get_fear_greed():
-    cached = cache_get("fng", 3600)
-    if cached: return cached
-    r = http_get("https://api.alternative.me/fng/")
-    try:
-        item = r.json()["data"][0]
-        label = item["value_classification"]
-        return cache_set("fng", {"value": int(item["value"]), "label": label, "label_ar": FNG_AR.get(label.lower(), label)})
-    except Exception:
-        return None
-
-def news_google(query, limit):
-    r = http_get("https://news.google.com/rss/search", {"q": f"{query} when:2d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
-    if r is None: return []
-    try: root = ET.fromstring(r.content)
-    except ET.ParseError: return []
-    items = []
-    for it in root.iter("item"):
-        title = (it.findtext("title") or "").strip()
-        if title: items.append({"title": title, "source": (it.findtext("source") or "Google News").strip()})
-        if len(items) >= limit: break
-    return items
-
-def get_news(symbol):
-    key = f"news_{symbol}"
-    cached = cache_get(key, 600)
-    if cached is not None: return cached
-    asset = news_google(f"{symbol} crypto" if is_crypto(symbol) else f"{symbol} stock", 4)
-    macro = news_google("Federal Reserve OR inflation", 3)
-    result = {"asset": asset, "macro": macro}
-    return cache_set(key, result)
-
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         return None
     body = {
         "model": OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً واحترافياً باللغة العربية متضمناً نموذج بلاك-شولز."},
+            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً شاملاً ووافياً باللغة العربية متضمناً نموذج بلاك-شولز والمؤشرات ولا تقطع الجمل أبداً."},
             {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات ونموذج بلاك-شولز: {json.dumps(payload, ensure_ascii=False)}"},
         ],
         "temperature": 0.2,
-        "max_tokens": 400,
+        "max_tokens": 700,
     }
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     try:
@@ -328,27 +327,27 @@ def analyze(symbol, interval="4h"):
             "symbol": symbol, "interval": interval, "price": ind["price"],
             "action": qaction, "quant_score": qscore, "indicators": ind,
             "levels": trade_levels(qaction, ind["price"], ind["atr"]),
-            "ai_analysis": ai_comment, "news": news, "fear_greed": fng, "reasons": qreasons
+            "ai_analysis": ai_comment, "news": news, "fear_greed": fng
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
 
 # ==========================================
-# لوحة تحكم ويب شاملة مع بلاك-شولز
+# لوحة تحكم ويب شاملة مع الأخبار ونموذج بلاك-شولز
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.1 Black-Scholes"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.3 Full News & AI"})
 
 @app.route("/dashboard")
 def dashboard():
     return """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8"><title>لوحة التحكم الشاملة مع بلاك-شولز</title>
+<meta charset="UTF-8"><title>لوحة التحكم الشاملة للتداول الكمي</title>
 <style>
   body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0d1117;color:#e6edf3;padding:15px;margin:0;}
   .container{max-width:550px;margin:0 auto;background:#161b22;padding:20px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.6);}
@@ -368,9 +367,12 @@ def dashboard():
   
   .row-item{display:flex;justify-content:space-between;padding:6px 0;font-size:14px;border-bottom:1px solid rgba(255,255,255,0.05);}
   .row-item span:last-child{font-weight:bold;}
-  
-  .news-item{margin-bottom:10px;font-size:13px;border-bottom:1px solid #30363d;padding-bottom:8px;}
+
+  .news-item{margin-bottom:12px;font-size:13px;border-bottom:1px solid #30363d;padding-bottom:8px;}
   .news-item a{color:#58a6ff;text-decoration:none;}
+  .news-item a:hover{text-decoration:underline;}
+  .news-source{font-size:11px;color:#8b949e;margin-top:2px;}
+  
   .loader{text-align:center;color:#58a6ff;padding:30px;font-size:16px;}
 </style>
 </head>
@@ -404,7 +406,7 @@ def dashboard():
     const interval = document.getElementById('intervalSelect').value;
     const area = document.getElementById('contentArea');
     
-    area.innerHTML = '<div class="loader">⏳ جاري حساب نموذج بلاك-شولز والرياضيات المتقدمة...</div>';
+    area.innerHTML = '<div class="loader">⏳ جاري جلب التحليل والأخبار الحية...</div>';
     
     try {
       let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
@@ -431,7 +433,36 @@ def dashboard():
         `;
       }
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي (Qwen)</div><div style="font-size:13px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+      let fngHtml = data.fng ? `
+        <div class="card">
+          <div class="card-title">السياق والمشاعر</div>
+          <div class="row-item"><span>الخوف والطمع</span><span>${data.fng.value} (${data.fng.label_ar})</span></div>
+        </div>
+      ` : '';
+
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+
+      let newsHtml = '';
+      if(data.news && data.news.asset && data.news.asset.length > 0) {
+        let items = data.news.asset.map(n => `
+          <div class="news-item">
+            <div><a href="${n.link}" target="_blank">• ${n.title}</a></div>
+            <div class="news-source">${n.source}</div>
+          </div>
+        `).join('');
+        newsHtml = `<div class="card"><div class="card-title">أخبار الأصل الفورية</div>${items}</div>`;
+      }
+
+      let macroHtml = '';
+      if(data.news && data.news.macro && data.news.macro.length > 0) {
+        let items = data.news.macro.map(n => `
+          <div class="news-item">
+            <div><a href="${n.link}" target="_blank">• ${n.title}</a></div>
+            <div class="news-source">${n.source}</div>
+          </div>
+        `).join('');
+        macroHtml = `<div class="card"><div class="card-title">أخبار الاقتصاد الكلي الفيدرالي والتضخم</div>${items}</div>`;
+      }
 
       area.innerHTML = `
         <div class="action-banner ${actionClass}">${data.action}</div>
@@ -452,7 +483,10 @@ def dashboard():
           <div class="row-item"><span>مؤشر القوة النسبية (RSI)</span><span>${data.rsi}</span></div>
           <div class="row-item"><span>متوسط الحركة (ATR)</span><span>${data.atr}</span></div>
         </div>
+        ${fngHtml}
         ${aiHtml}
+        ${newsHtml}
+        ${macroHtml}
       `;
     } catch(e) {
       area.innerHTML = '<div style="color:#da3633;text-align:center;padding:20px;">❌ حدث خطأ في الاتصال بالخادم.</div>';
@@ -500,7 +534,9 @@ def api_analyze():
         "bs_gamma": f"{ind['bs_gamma']:.4f}",
         "bs_vega": f"{ind['bs_vega']:.4f}",
         "levels": formatted_levels,
-        "ai": res["ai_analysis"]
+        "ai": res["ai_analysis"],
+        "fng": res["fear_greed"],
+        "news": res["news"]
     })
 
 def run_flask():
@@ -517,7 +553,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 **أهلاً بك في بوت التداول الكمي المطور مع نموذج بلاك-شولز!**\nاختر الأصل المطلوب أدناه للتحليل الفوري:",
+        "🤖 **أهلاً بك في بوت التداول الكمي المطور!**\nاختر الأصل المطلوب أدناه للتحليل الفوري:",
         reply_markup=reply_markup, parse_mode="Markdown"
     )
 
@@ -553,9 +589,7 @@ async def process_and_send(message, symbol, interval):
         f"• السعر العادل (Call): `{fmt_price(diff['bs_call'])}`\n"
         f"• التقلب الضمني (IV): `{diff['iv']:.1f}%`\n"
         f"• دلتا (Delta): `{diff['bs_delta']:.4f}` | جاما (Gamma): `{diff['bs_gamma']:.4f}`\n\n"
-        f"📐 **التفاضل والتكامل:**\n"
-        f"• السرعة: `{diff['velocity']:+.4f}` | التسارع: `{diff['acceleration']:+.4f}`\n"
-        f"• مخاطر التكامل (CVaR): `{diff['cvar_risk']:.4f}`"
+        f"🤖 **تحليل الذكاء الاصطناعي:**\n{res['ai_analysis'] or 'غير متوفر'}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -571,7 +605,7 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Black-Scholes Bot is polling...")
+    logger.info("Bot v3.3 is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
