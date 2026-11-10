@@ -50,6 +50,13 @@ CRYPTO_NAMES = {
     "BTC": "Bitcoin", "ETH": "Ethereum", "XRP": "XRP Ripple", "BNB": "BNB Binance",
     "SOL": "Solana", "ADA": "Cardano", "DOGE": "Dogecoin",
 }
+NEWS_QUERIES = {
+    "GC=F": "gold price", "SI=F": "silver price", "CL=F": "crude oil price",
+    "EURUSD=X": "EUR USD euro dollar", "GBPUSD=X": "GBP USD pound dollar",
+    "USDJPY=X": "USD JPY yen dollar", "^GSPC": "S&P 500", "^IXIC": "Nasdaq",
+    "^DJI": "Dow Jones", "AAPL": "Apple stock", "TSLA": "Tesla stock",
+}
+FNG_AR = {"extreme fear": "خوف شديد", "fear": "خوف", "neutral": "محايد", "greed": "طمع", "extreme greed": "طمع شديد"}
 
 # ==========================================
 # أدوات عامة
@@ -69,7 +76,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/2.8)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.0)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -189,12 +196,12 @@ def compute_indicators(df, interval):
 def quant_score(ind):
     score, reasons = 0, []
     p, e20, e50 = ind["price"], ind["ema20"], ind["ema50"]
-    if p > e50 and e20 > e50: score += 2
-    elif p < e50 and e20 < e50: score -= 2
+    if p > e50 and e20 > e50: score += 2; reasons.append("اتجاه صاعد")
+    elif p < e50 and e20 < e50: score -= 2; reasons.append("اتجاه هابط")
     else: score += 1 if p > e50 else -1
 
-    if ind["macd_hist"] > 0: score += 1
-    elif ind["macd_hist"] < 0: score -= 1
+    if ind["macd_hist"] > 0: score += 1; reasons.append("زخم إيجابي")
+    elif ind["macd_hist"] < 0: score -= 1; reasons.append("زخم سلبي")
 
     if ind["velocity"] > 0 and ind["acceleration"] > 0: score += 1
     elif ind["velocity"] < 0 and ind["acceleration"] < 0: score -= 1
@@ -215,19 +222,49 @@ def trade_levels(action, price, atr):
         "sl": price - d * 1.5 * atr,
         "tp1": price + d * 1.5 * atr,
         "tp2": price + d * 3.0 * atr,
+        "tp3": price + d * 4.5 * atr,
     }
 
-# ==========================================
-# ذكاء Qwen الاصطناعي عبر OpenRouter
-# ==========================================
+def get_fear_greed():
+    cached = cache_get("fng", 3600)
+    if cached: return cached
+    r = http_get("https://api.alternative.me/fng/")
+    try:
+        item = r.json()["data"][0]
+        label = item["value_classification"]
+        return cache_set("fng", {"value": int(item["value"]), "label": label, "label_ar": FNG_AR.get(label.lower(), label)})
+    except Exception:
+        return None
+
+def news_google(query, limit):
+    r = http_get("https://news.google.com/rss/search", {"q": f"{query} when:2d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    if r is None: return []
+    try: root = ET.fromstring(r.content)
+    except ET.ParseError: return []
+    items = []
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        if title: items.append({"title": title, "source": (it.findtext("source") or "Google News").strip()})
+        if len(items) >= limit: break
+    return items
+
+def get_news(symbol):
+    key = f"news_{symbol}"
+    cached = cache_get(key, 600)
+    if cached is not None: return cached
+    asset = news_google(f"{symbol} crypto" if is_crypto(symbol) else f"{symbol} stock", 4)
+    macro = news_google("Federal Reserve OR inflation", 3)
+    result = {"asset": asset, "macro": macro}
+    return cache_set(key, result)
+
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
-        return "مفتاح OpenRouter غير مضبوط."
+        return None
     body = {
         "model": OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً باللغة العربية بناءً على البيانات المقدمة."},
-            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والتفاضل والتكامل: {json.dumps(payload, ensure_ascii=False)}"},
+            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً واحترافياً باللغة العربية."},
+            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والرياضيات المتقدمة: {json.dumps(payload, ensure_ascii=False)}"},
         ],
         "temperature": 0.2,
         "max_tokens": 400,
@@ -237,10 +274,10 @@ def ask_ai(payload):
         res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=30)
         if res.status_code == 200:
             content = res.json()["choices"][0]["message"]["content"]
-            return content.strip()
+            return content.replace("###", "").replace("**", "").strip()
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return "تعذر الاتصال بالذكاء الاصطناعي."
+    return None
 
 def analyze(symbol, interval="4h"):
     try:
@@ -255,97 +292,164 @@ def analyze(symbol, interval="4h"):
             "technical": ind, "quant_action": qaction, "score": qscore
         }
         ai_comment = ask_ai(payload)
+        news = get_news(symbol)
+        fng = get_fear_greed() if is_crypto(symbol) else None
 
         return {
             "symbol": symbol, "interval": interval, "price": ind["price"],
             "action": qaction, "quant_score": qscore, "indicators": ind,
             "levels": trade_levels(qaction, ind["price"], ind["atr"]),
-            "ai_analysis": ai_comment
+            "ai_analysis": ai_comment, "news": news, "fear_greed": fng, "reasons": qreasons
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
 
 # ==========================================
-# خادم الويب (Flask Dashboard مع أزرار تفاعلية حقيقية)
+# لوحة تحكم ويب شاملة وكاملة التفاصيل
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v2.8 Ultimate"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.0 Ultimate Full"})
 
 @app.route("/dashboard")
 def dashboard():
     return """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8"><title>لوحة تحكم بوت التداول</title>
+<meta charset="UTF-8"><title>لوحة التحكم الشاملة للتداول الكمي</title>
 <style>
-  body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0f0c29;color:#fff;padding:20px;text-align:center;}
-  .container{max-width:900px;margin:0 auto;background:rgba(255,255,255,0.05);padding:30px;border-radius:15px;backdrop-filter:blur(10px);}
-  h1{color:#00d2ff;margin-bottom:10px;}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:25px;}
-  .card{background:rgba(255,255,255,0.1);padding:20px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);text-align:right;}
-  .card h3{margin-bottom:10px;color:#00d2ff;text-align:center;}
-  .btn-group{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;justify-content:center;}
-  button, .btn-link{background:linear-gradient(90deg, #00d2ff, #3a7bd5);border:none;padding:8px 12px;border-radius:5px;color:#fff;cursor:pointer;text-decoration:none;font-size:14px;}
-  button:hover, .btn-link:hover{opacity:0.8;}
-  #result{margin-top:25px;background:rgba(0,0,0,0.3);padding:15px;border-radius:10px;text-align:right;white-space:pre-wrap;display:none;}
+  body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0d1117;color:#e6edf3;padding:15px;margin:0;}
+  .container{max-width:550px;margin:0 auto;background:#161b22;padding:20px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.6);}
+  .top-bar{display:flex;gap:10px;margin-bottom:15px;}
+  select, button{background:#21262d;color:#e6edf3;border:1px solid #30363d;padding:10px;border-radius:8px;font-size:14px;cursor:pointer;}
+  select{flex:1;}
+  button.analyze-btn{background:#238636;color:#fff;font-weight:bold;flex:2;border:none;}
+  button.analyze-btn:hover{background:#2ea043;}
+  
+  .action-banner{padding:18px;border-radius:10px;text-align:center;font-size:22px;font-weight:bold;margin-bottom:15px;}
+  .buy{background:#238636;color:#fff;}
+  .sell{background:#da3633;color:#fff;}
+  .wait{background:#9e6a03;color:#fff;}
+
+  .card{background:#21262d;border:1px solid #30363d;border-radius:10px;padding:15px;margin-bottom:15px;}
+  .card-title{color:#58a6ff;font-size:15px;font-weight:bold;margin-bottom:10px;border-bottom:1px solid #30363d;padding-bottom:5px;}
+  
+  .row-item{display:flex;justify-content:space-between;padding:6px 0;font-size:14px;border-bottom:1px solid rgba(255,255,255,0.05);}
+  .row-item span:last-child{font-weight:bold;}
+  
+  .news-item{margin-bottom:10px;font-size:13px;border-bottom:1px solid #30363d;padding-bottom:8px;}
+  .news-item a{color:#58a6ff;text-decoration:none;}
+  .news-item a:hover{text-decoration:underline;}
+  .news-source{font-size:11px;color:#8b949e;margin-top:2px;}
+  
+  .loader{text-align:center;color:#58a6ff;padding:30px;font-size:16px;}
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>لوحة تحكم بوت التداول الكمي والتفاضلي</h1>
-  <p>النظام مدعوم بالتحليل الرياضي، ذكاء Qwen الاصطناعي، وإدارة المخاطر (CVaR).</p>
-  
-  <div class="grid">
-    <div class="card">
-      <h3>العملات والأصول</h3>
-      <div class="btn-group">
-        <button onclick="fetchAnalysis('BTC-USD')">BTC</button>
-        <button onclick="fetchAnalysis('ETH-USD')">ETH</button>
-        <button onclick="fetchAnalysis('SOL-USD')">SOL</button>
-        <button onclick="fetchAnalysis('XRP-USD')">XRP</button>
-      </div>
-    </div>
-    
-    <div class="card">
-      <h3>الفواصل الزمنية</h3>
-      <div class="btn-group">
-        <button onclick="setIntervalTime('15m')">15m</button>
-        <button onclick="setIntervalTime('1h')">1h</button>
-        <button onclick="setIntervalTime('4h')" style="background:#00c853;">4h (الافتراضي)</button>
-        <button onclick="setIntervalTime('1d')">1d</button>
-      </div>
-    </div>
+  <div class="top-bar">
+    <select id="symbolSelect">
+      <option value="BTC-USD">BTC-USD</option>
+      <option value="ETH-USD">ETH-USD</option>
+      <option value="SOL-USD">SOL-USD</option>
+      <option value="XRP-USD">XRP-USD</option>
+      <option value="GC=F">الذهب (GC=F)</option>
+      <option value="EURUSD=X">يورو/دولار (EURUSD)</option>
+    </select>
+    <select id="intervalSelect">
+      <option value="15m">15m</option>
+      <option value="1h">1h</option>
+      <option value="4h" selected>4h</option>
+      <option value="1d">1d</option>
+    </select>
+    <button class="analyze-btn" onclick="runAnalysis()">تحليل</button>
   </div>
 
-  <div id="result">اختر أصلًا فحص التحليل الفوري...</div>
+  <div id="contentArea">
+    <div class="loader">اختر الأصل والفترة الزمنية واضغط على تحليل...</div>
+  </div>
 </div>
 
 <script>
-  let currentInterval = '4h';
-  function setIntervalTime(interval) {
-    currentInterval = interval;
-    alert('تم تغيير الفاصل الزمني إلى: ' + interval);
-  }
-  async function fetchAnalysis(symbol) {
-    const resDiv = document.getElementById('result');
-    resDiv.style.display = 'block';
-    resDiv.innerHTML = '⏳ جاري جلب التحليل الرياضي والذكاء الاصطناعي لـ ' + symbol + '...';
+  async function runAnalysis() {
+    const symbol = document.getElementById('symbolSelect').value;
+    const interval = document.getElementById('intervalSelect').value;
+    const area = document.getElementById('contentArea');
+    
+    area.innerHTML = '<div class="loader">⏳ جاري جلب وحساب بيانات السوق المتقدمة...</div>';
+    
     try {
-      let response = await fetch('/api/analyze?symbol=' + symbol + '&interval=' + currentInterval);
-      let data = await response.json();
-      if(data.success) {
-        resDiv.innerHTML = `📊 تحليل ${data.symbol} (${data.interval.toUpperCase()})\nالسعر: ${data.price}\nالتوصية: ${data.action}\n\n📐 السرعة: ${data.velocity} | التسارع: ${data.acceleration} | CVaR: ${data.cvar}\n\n🤖 تحليل الذكاء الاصطناعي:\n${data.ai}`;
-      } else {
-        resDiv.innerHTML = '❌ فشل في جلب التحليل.';
+      let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
+      let data = await res.json();
+      
+      if(!data.success) {
+        area.innerHTML = '<div style="color:#da3633;text-align:center;padding:20px;">❌ فشل في جلب التحليل.</div>';
+        return;
       }
+
+      let actionClass = data.action.includes('شراء') ? 'buy' : data.action.includes('بيع') ? 'sell' : 'wait';
+      
+      let levelsHtml = '';
+      if(data.levels) {
+        levelsHtml = `
+          <div class="card">
+            <div class="card-title">مستويات الصفقة المقترحة</div>
+            <div class="row-item"><span>الدخول (السعر الحالي)</span><span style="color:#58a6ff;">${data.price}</span></div>
+            <div class="row-item"><span>وقف الخسارة (SL)</span><span style="color:#da3633;">${data.levels.sl}</span></div>
+            <div class="row-item"><span>الهدف الأول (1R)</span><span style="color:#3fb950;">${data.levels.tp1}</span></div>
+            <div class="row-item"><span>الهدف الثاني (2R)</span><span style="color:#3fb950;">${data.levels.tp2}</span></div>
+            <div class="row-item"><span>الهدف الثالث (3R)</span><span style="color:#3fb950;">${data.levels.tp3}</span></div>
+          </div>
+        `;
+      }
+
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي (Qwen)</div><div style="font-size:13px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+
+      let fngHtml = data.fng ? `
+        <div class="card">
+          <div class="card-title">السياق والمشاعر</div>
+          <div class="row-item"><span>الخوف والطمع</span><span>${data.fng.value} (${data.fng.label_ar})</span></div>
+        </div>
+      ` : '';
+
+      let newsHtml = '';
+      if(data.news && data.news.asset && data.news.asset.length > 0) {
+        let items = data.news.asset.map(n => `
+          <div class="news-item">
+            <div>• ${n.title}</div>
+            <div class="news-source">${n.source}</div>
+          </div>
+        `).join('');
+        newsHtml = `<div class="card"><div class="card-title">أخبار الأصل</div>${items}</div>`;
+      }
+
+      area.innerHTML = `
+        <div class="action-banner ${actionClass}">${data.action}</div>
+        ${levelsHtml}
+        <div class="card">
+          <div class="card-title">التحليل الكمي والتفاضلي (${data.score})</div>
+          <div class="row-item"><span>السرعة (التفاضل 1)</span><span>${data.velocity}</span></div>
+          <div class="row-item"><span>التسارع (التفاضل 2)</span><span>${data.acceleration}</span></div>
+          <div class="row-item"><span>مخاطر التكامل (CVaR)</span><span>${data.cvar}</span></div>
+          <div class="row-item"><span>مؤشر القوة النسبية (RSI)</span><span>${data.rsi}</span></div>
+          <div class="row-item"><span>متوسط الحركة (ATR)</span><span>${data.atr}</span></div>
+          <div class="row-item"><span>EMA20 / EMA50</span><span>${data.ema20} / ${data.ema50}</span></div>
+          <div class="row-item"><span>MACD Hist</span><span>${data.macd}</span></div>
+          <div class="row-item"><span>دعم / مقاومة</span><span>${data.support} / ${data.resistance}</span></div>
+        </div>
+        ${fngHtml}
+        ${aiHtml}
+        ${newsHtml}
+      `;
     } catch(e) {
-      resDiv.innerHTML = '❌ حدث خطأ في الاتصال بالسيرفر.';
+      area.innerHTML = '<div style="color:#da3633;text-align:center;padding:20px;">❌ حدث خطأ في الاتصال بالخادم.</div>';
     }
   }
+  // تشغيل تحليل افتراضي لـ BTC عند الفتح
+  window.onload = () => { runAnalysis(); };
 </script>
 </body>
 </html>"""
@@ -357,16 +461,39 @@ def api_analyze():
     res = analyze(symbol, interval)
     if not res:
         return jsonify({"success": False})
+    
+    ind = res["indicators"]
+    levels = res["levels"]
+    formatted_levels = None
+    if levels:
+        formatted_levels = {
+            "sl": fmt_price(levels["sl"]),
+            "tp1": fmt_price(levels["tp1"]),
+            "tp2": fmt_price(levels["tp2"]),
+            "tp3": fmt_price(levels["tp3"]),
+        }
+
     return jsonify({
         "success": True,
         "symbol": res["symbol"],
         "interval": res["interval"],
         "price": fmt_price(res["price"]),
         "action": res["action"],
-        "velocity": f"{res['indicators']['velocity']:+.4f}",
-        "acceleration": f"{res['indicators']['acceleration']:+.4f}",
-        "cvar": f"{res['indicators']['cvar_risk']:.4f}",
-        "ai": res["ai_analysis"]
+        "score": res["quant_score"],
+        "velocity": f"{ind['velocity']:+.4f}",
+        "acceleration": f"{ind['acceleration']:+.4f}",
+        "cvar": f"{ind['cvar_risk']:.4f}",
+        "rsi": f"{ind['rsi']:.1f}",
+        "atr": f"{ind['atr']:.2f}",
+        "ema20": fmt_price(ind["ema20"]),
+        "ema50": fmt_price(ind["ema50"]),
+        "macd": f"{ind['macd_hist']:.2f}",
+        "support": fmt_price(ind["support_50"]),
+        "resistance": fmt_price(ind["resistance_50"]),
+        "levels": formatted_levels,
+        "ai": res["ai_analysis"],
+        "fng": res["fear_greed"],
+        "news": res["news"]
     })
 
 def run_flask():
@@ -413,7 +540,7 @@ async def process_and_send(message, symbol, interval):
     diff = res['indicators']
     levels_txt = ""
     if res['levels']:
-        levels_txt = f"\n🎯 **مستويات التداول:**\nSL: `{fmt_price(res['levels']['sl'])}`\nTP1: `{fmt_price(res['levels']['tp1'])}`\nTP2: `{fmt_price(res['levels']['tp2'])}`"
+        levels_txt = f"\n🎯 **مستويات التداول:**\nSL: `{fmt_price(res['levels']['sl'])}`\nTP1: `{fmt_price(res['levels']['tp1'])}`\nTP2: `{fmt_price(res['levels']['tp2'])}`\nTP3: `{fmt_price(res['levels']['tp3'])}`"
 
     msg = (
         f"📊 **تحليل {res['symbol']} ({res['interval'].upper()})**\n"
@@ -424,7 +551,7 @@ async def process_and_send(message, symbol, interval):
         f"• التسارع (التفاضل 2): `{diff['acceleration']:+.4f}`\n"
         f"• مخاطر التكامل (CVaR): `{diff['cvar_risk']:.4f}`"
         f"{levels_txt}\n\n"
-        f"🤖 **تحليل الذكاء الاصطناعي (Qwen):**\n{res['ai_analysis']}"
+        f"🤖 **تحليل الذكاء الاصطناعي (Qwen):**\n{res['ai_analysis'] or 'غير متوفر'}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -440,7 +567,7 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Ultimate Bot with AI & Interactive Dashboard is polling...")
+    logger.info("Ultimate Full Bot is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
