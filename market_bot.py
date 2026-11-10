@@ -1,4 +1,3 @@
-
 import asyncio
 import hmac
 import json
@@ -70,7 +69,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/2.5)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/2.8)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -98,7 +97,7 @@ def fmt_price(p):
     return f"{p:,.{decimals}f}"
 
 # ==========================================
-# جلب بيانات الأسعار والمؤشرات
+# جلب البيانات والمؤشرات (التفاضل والتكامل)
 # ==========================================
 def fetch_binance(symbol, interval):
     pair = symbol[:-4] + "USDT"
@@ -218,6 +217,31 @@ def trade_levels(action, price, atr):
         "tp2": price + d * 3.0 * atr,
     }
 
+# ==========================================
+# ذكاء Qwen الاصطناعي عبر OpenRouter
+# ==========================================
+def ask_ai(payload):
+    if not OPENROUTER_API_KEY:
+        return "مفتاح OpenRouter غير مضبوط."
+    body = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً باللغة العربية بناءً على البيانات المقدمة."},
+            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والتفاضل والتكامل: {json.dumps(payload, ensure_ascii=False)}"},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 400,
+    }
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    try:
+        res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=30)
+        if res.status_code == 200:
+            content = res.json()["choices"][0]["message"]["content"]
+            return content.strip()
+    except Exception as e:
+        logger.error(f"AI Error: {e}")
+    return "تعذر الاتصال بالذكاء الاصطناعي."
+
 def analyze(symbol, interval="4h"):
     try:
         df = fetch_ohlcv(symbol, interval)
@@ -226,23 +250,30 @@ def analyze(symbol, interval="4h"):
         qscore, qreasons = quant_score(ind)
         qaction = score_to_action(qscore)
 
+        payload = {
+            "symbol": symbol, "interval": interval,
+            "technical": ind, "quant_action": qaction, "score": qscore
+        }
+        ai_comment = ask_ai(payload)
+
         return {
             "symbol": symbol, "interval": interval, "price": ind["price"],
             "action": qaction, "quant_score": qscore, "indicators": ind,
             "levels": trade_levels(qaction, ind["price"], ind["atr"]),
+            "ai_analysis": ai_comment
         }
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
 
 # ==========================================
-# خادم الويب (Flask Dashboard مع الأصول والتايم فريم)
+# خادم الويب (Flask Dashboard مع أزرار تفاعلية حقيقية)
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v2.6"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v2.8 Ultimate"})
 
 @app.route("/dashboard")
 def dashboard():
@@ -252,32 +283,98 @@ def dashboard():
 <meta charset="UTF-8"><title>لوحة تحكم بوت التداول</title>
 <style>
   body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0f0c29;color:#fff;padding:20px;text-align:center;}
-  .container{max-width:800px;margin:0 auto;background:rgba(255,255,255,0.05);padding:30px;border-radius:15px;backdrop-filter:blur(10px);}
+  .container{max-width:900px;margin:0 auto;background:rgba(255,255,255,0.05);padding:30px;border-radius:15px;backdrop-filter:blur(10px);}
   h1{color:#00d2ff;margin-bottom:10px;}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-top:25px;}
-  .card{background:rgba(255,255,255,0.1);padding:20px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);}
-  .card h3{margin-bottom:10px;color:#3a7bd5;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:25px;}
+  .card{background:rgba(255,255,255,0.1);padding:20px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);text-align:right;}
+  .card h3{margin-bottom:10px;color:#00d2ff;text-align:center;}
+  .btn-group{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;justify-content:center;}
+  button, .btn-link{background:linear-gradient(90deg, #00d2ff, #3a7bd5);border:none;padding:8px 12px;border-radius:5px;color:#fff;cursor:pointer;text-decoration:none;font-size:14px;}
+  button:hover, .btn-link:hover{opacity:0.8;}
+  #result{margin-top:25px;background:rgba(0,0,0,0.3);padding:15px;border-radius:10px;text-align:right;white-space:pre-wrap;display:none;}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>لوحة تحكم بوت التداول الكمي والتفاضلي</h1>
-  <p>النظام يعمل بكفاءة رياضية عالية ومتصل بتليجرام بنجاح.</p>
+  <p>النظام مدعوم بالتحليل الرياضي، ذكاء Qwen الاصطناعي، وإدارة المخاطر (CVaR).</p>
+  
   <div class="grid">
-    <div class="card"><h3>العملات المدعومة</h3><p>BTC-USD, ETH-USD, XRP-USD, SOL-USD</p></div>
-    <div class="card"><h3>الفواصل الزمنية</h3><p>15m, 1h, 4h, 1d</p></div>
-    <div class="card"><h3>النماذج المتاحة</h3><p>التفاضل والتكامل + CVaR + SMC</p></div>
+    <div class="card">
+      <h3>العملات والأصول</h3>
+      <div class="btn-group">
+        <button onclick="fetchAnalysis('BTC-USD')">BTC</button>
+        <button onclick="fetchAnalysis('ETH-USD')">ETH</button>
+        <button onclick="fetchAnalysis('SOL-USD')">SOL</button>
+        <button onclick="fetchAnalysis('XRP-USD')">XRP</button>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h3>الفواصل الزمنية</h3>
+      <div class="btn-group">
+        <button onclick="setIntervalTime('15m')">15m</button>
+        <button onclick="setIntervalTime('1h')">1h</button>
+        <button onclick="setIntervalTime('4h')" style="background:#00c853;">4h (الافتراضي)</button>
+        <button onclick="setIntervalTime('1d')">1d</button>
+      </div>
+    </div>
   </div>
+
+  <div id="result">اختر أصلًا فحص التحليل الفوري...</div>
 </div>
+
+<script>
+  let currentInterval = '4h';
+  function setIntervalTime(interval) {
+    currentInterval = interval;
+    alert('تم تغيير الفاصل الزمني إلى: ' + interval);
+  }
+  async function fetchAnalysis(symbol) {
+    const resDiv = document.getElementById('result');
+    resDiv.style.display = 'block';
+    resDiv.innerHTML = '⏳ جاري جلب التحليل الرياضي والذكاء الاصطناعي لـ ' + symbol + '...';
+    try {
+      let response = await fetch('/api/analyze?symbol=' + symbol + '&interval=' + currentInterval);
+      let data = await response.json();
+      if(data.success) {
+        resDiv.innerHTML = `📊 تحليل ${data.symbol} (${data.interval.toUpperCase()})\nالسعر: ${data.price}\nالتوصية: ${data.action}\n\n📐 السرعة: ${data.velocity} | التسارع: ${data.acceleration} | CVaR: ${data.cvar}\n\n🤖 تحليل الذكاء الاصطناعي:\n${data.ai}`;
+      } else {
+        resDiv.innerHTML = '❌ فشل في جلب التحليل.';
+      }
+    } catch(e) {
+      resDiv.innerHTML = '❌ حدث خطأ في الاتصال بالسيرفر.';
+    }
+  }
+</script>
 </body>
 </html>"""
+
+@app.route("/api/analyze")
+def api_analyze():
+    symbol = request.args.get("symbol", "BTC-USD")
+    interval = request.args.get("interval", "4h")
+    res = analyze(symbol, interval)
+    if not res:
+        return jsonify({"success": False})
+    return jsonify({
+        "success": True,
+        "symbol": res["symbol"],
+        "interval": res["interval"],
+        "price": fmt_price(res["price"]),
+        "action": res["action"],
+        "velocity": f"{res['indicators']['velocity']:+.4f}",
+        "acceleration": f"{res['indicators']['acceleration']:+.4f}",
+        "cvar": f"{res['indicators']['cvar_risk']:.4f}",
+        "ai": res["ai_analysis"]
+    })
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# أوامر تليجرام مع الأزرار التفاعلية
+# تليجرام والأزرار التفاعلية
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -286,14 +383,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 **أهلاً بك في بوت التداول الكمي المطور!**\nاختر العملة المطلوبة أدناه للتحليل الفوري بضغطة زر:",
+        "🤖 **أهلاً بك في بوت التداول الكمي المطور!**\nاختر الأصل المطلوب أدناه للتحليل الفوري بضغطة زر:",
         reply_markup=reply_markup, parse_mode="Markdown"
     )
 
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("الاستخدام: `/smart BTC-USD 4h` أو اضغط على الأوامر.", parse_mode="Markdown")
+        await update.message.reply_text("الاستخدام: `/smart BTC-USD 4h` أو استخدم الأزرار.", parse_mode="Markdown")
         return
     symbol = normalize_symbol(args[0])
     interval = args[1].lower() if len(args) > 1 else "4h"
@@ -307,7 +404,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_and_send(query.message, symbol, interval)
 
 async def process_and_send(message, symbol, interval):
-    status_msg = await message.reply_text(f"⏳ جاري جلب البيانات وتطبيق التفاضل والتكامل على {symbol}...")
+    status_msg = await message.reply_text(f"⏳ جاري جلب البيانات، تطبيق التفاضل، وتحليل الذكاء الاصطناعي لـ {symbol}...")
     res = analyze(symbol, interval)
     if not res:
         await status_msg.edit_text("❌ فشل في جلب البيانات أو إجراء التحليل.")
@@ -326,7 +423,8 @@ async def process_and_send(message, symbol, interval):
         f"• السرعة اللحظية (التفاضل 1): `{diff['velocity']:+.4f}`\n"
         f"• التسارع (التفاضل 2): `{diff['acceleration']:+.4f}`\n"
         f"• مخاطر التكامل (CVaR): `{diff['cvar_risk']:.4f}`"
-        f"{levels_txt}"
+        f"{levels_txt}\n\n"
+        f"🤖 **تحليل الذكاء الاصطناعي (Qwen):**\n{res['ai_analysis']}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -342,7 +440,7 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Bot is polling...")
+    logger.info("Ultimate Bot with AI & Interactive Dashboard is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
