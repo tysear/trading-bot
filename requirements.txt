@@ -1,7 +1,7 @@
-   python-telegram-bot
-   flask
-   requests
-   pandas
-   numpy
-   yfinance
-   waitress
+scipy
+numpy
+pandas
+requests
+Flask
+python-telegram-bot
+yfinance
