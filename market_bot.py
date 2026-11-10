@@ -95,7 +95,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.3)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.5)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -140,7 +140,7 @@ def get_news(symbol):
     cached = cache_get(key, 600)
     if cached is not None: return cached
     asset = news_google(f"{symbol} crypto" if is_crypto(symbol) else f"{symbol} stock", 4)
-    macro = news_google("Federal Reserve OR inflation", 3)
+    macro = news_google("Federal Reserve OR inflation OR CPI", 3)
     result = {"asset": asset, "macro": macro}
     return cache_set(key, result)
 
@@ -288,14 +288,23 @@ def trade_levels(action, price, atr):
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         return None
+    
+    system_prompt = (
+        "أنت محلل مالي محترف وخبير تداول كمي. قم بتقديم تحليل شامل باللغة العربية.\n"
+        "يجب أن يتضمن التحليل:\n"
+        "1. قراءة للتحليل الفني والرياضي (بلاك-شولز، السرعة، والتسارع).\n"
+        "2. تحليل الأخبار الحية المرفقة (بما فيها أخبار التضخم و CPI والفيدرالي) وتأثيرها على معنويات السوق.\n"
+        "3. خلاصة التوصية والقرار بفقرات واضحة وبدون قطع."
+    )
+    
     body = {
         "model": OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً شاملاً ووافياً باللغة العربية متضمناً نموذج بلاك-شولز والمؤشرات ولا تقطع الجمل أبداً."},
-            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات ونموذج بلاك-شولز: {json.dumps(payload, ensure_ascii=False)}"},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والأخبار الحية التالية: {json.dumps(payload, ensure_ascii=False)}"},
         ],
         "temperature": 0.2,
-        "max_tokens": 700,
+        "max_tokens": 750,
     }
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     try:
@@ -314,14 +323,18 @@ def analyze(symbol, interval="4h"):
         ind = compute_indicators(df, interval)
         qscore, qreasons = quant_score(ind)
         qaction = score_to_action(qscore)
+        news = get_news(symbol)
+        fng = get_fear_greed() if is_crypto(symbol) else None
+
+        news_titles = [item["title"] for item in news.get("asset", [])] if news else []
+        macro_titles = [item["title"] for item in news.get("macro", [])] if news else []
 
         payload = {
             "symbol": symbol, "interval": interval,
-            "technical": ind, "quant_action": qaction, "score": qscore
+            "technical": ind, "quant_action": qaction, "score": qscore,
+            "fear_and_greed": fng, "latest_news_asset": news_titles, "latest_news_macro": macro_titles
         }
         ai_comment = ask_ai(payload)
-        news = get_news(symbol)
-        fng = get_fear_greed() if is_crypto(symbol) else None
 
         return {
             "symbol": symbol, "interval": interval, "price": ind["price"],
@@ -340,7 +353,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.3 Full News & AI"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.5 Proactive AI & Alerts"})
 
 @app.route("/dashboard")
 def dashboard():
@@ -406,7 +419,7 @@ def dashboard():
     const interval = document.getElementById('intervalSelect').value;
     const area = document.getElementById('contentArea');
     
-    area.innerHTML = '<div class="loader">⏳ جاري جلب التحليل والأخبار الحية...</div>';
+    area.innerHTML = '<div class="loader">⏳ جاري جلب التحليل وقراءة الأخبار بواسطة الذكاء الاصطناعي...</div>';
     
     try {
       let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
@@ -440,7 +453,7 @@ def dashboard():
         </div>
       ` : '';
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي شامل الأخبار (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
 
       let newsHtml = '';
       if(data.news && data.news.asset && data.news.asset.length > 0) {
@@ -461,7 +474,7 @@ def dashboard():
             <div class="news-source">${n.source}</div>
           </div>
         `).join('');
-        macroHtml = `<div class="card"><div class="card-title">أخبار الاقتصاد الكلي الفيدرالي والتضخم</div>${items}</div>`;
+        macroHtml = `<div class="card"><div class="card-title">أخبار الاقتصاد الكلي (الفيدرالي / التضخم / CPI)</div>${items}</div>`;
       }
 
       area.innerHTML = `
@@ -544,20 +557,74 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
+# نظام التنبيهات المجدولة في الخلفية (Background Alerts)
+# ==========================================
+# حفظ آخر تتبع للمستخدمين الذين تفاعلوا مع البوت لإرسال التنبيهات إليهم
+_active_chat_ids = set()
+
+def background_market_watcher(bot_app):
+    """مهمة تعمل في الخلفية لمراقبة الأسواق وإرسال تنبيهات قوية تلقائياً"""
+    symbols_to_watch = ["BTC-USD", "ETH-USD"]
+    logger.info("Background market watcher started.")
+    
+    # الانتظار قليلاً حتى يبدأ السيرفر بالكامل
+    time.sleep(30)
+    
+    while True:
+        try:
+            if _active_chat_ids:
+                for symbol in symbols_to_watch:
+                    res = analyze(symbol, "4h")
+                    if res and abs(res["quant_score"]) >= 3: # تنبيه عند وجود إشارة قوية (شراء/بيع قوي)
+                        action = res["action"]
+                        price = fmt_price(res["price"])
+                        score = res["quant_score"]
+                        
+                        alert_msg = (
+                            f"🚨 **تنبيه قنص استباقي من البوت!**\n"
+                            f"رصد فرصة قوية على `{symbol}`:\n"
+                            f"• التوصية: **{action}** (النقاط: {score})\n"
+                            f"• السعر الحالي: `{price}`\n"
+                            f"• ملخص الذكاء الاصطناعي:\n{res['ai_analysis'][:300]}..."
+                        )
+                        
+                        for chat_id in _active_chat_ids:
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    bot_app.bot.send_message(chat_id=chat_id, text=alert_msg, parse_mode="Markdown"),
+                                    bot_app.loop
+                                )
+                            except Exception as ex:
+                                logger.error(f"Failed to send alert to {chat_id}: {ex}")
+            
+            # فحص السوق كل ساعتين لتجنب الإزعاج المتكرر
+            time.sleep(7200)
+        except Exception as e:
+            logger.error(f"Error in background watcher: {e}")
+            time.sleep(300)
+
+# ==========================================
 # تليجرام والأزرار التفاعلية
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    _active_chat_ids.add(chat_id)
+    
     keyboard = [
         [InlineKeyboardButton("BTC-USD (4h)", callback_data="BTC-USD_4h"), InlineKeyboardButton("ETH-USD (4h)", callback_data="ETH-USD_4h")],
         [InlineKeyboardButton("SOL-USD (4h)", callback_data="SOL-USD_4h"), InlineKeyboardButton("XRP-USD (4h)", callback_data="XRP-USD_4h")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 **أهلاً بك في بوت التداول الكمي المطور!**\nاختر الأصل المطلوب أدناه للتحليل الفوري:",
+        "🤖 **أهلاً بك في بوت التداول الكمي المطور (الإصدار الاستباقي v3.5)!**\n"
+        "تم تفعيل نظام المراقبة التلقائية والتنبيهات. اختر الأصل المطلوب أدناه للتحليل الفوري:",
         reply_markup=reply_markup, parse_mode="Markdown"
     )
 
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    _active_chat_ids.add(chat_id)
+    
     args = context.args
     if not args:
         await update.message.reply_text("الاستخدام: `/smart BTC-USD 4h`", parse_mode="Markdown")
@@ -568,13 +635,16 @@ async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    chat_id = query.message.chat_id
+    _active_chat_ids.add(chat_id)
+    
     await query.answer()
     data_parts = query.data.split("_")
     symbol, interval = data_parts[0], data_parts[1]
     await process_and_send(query.message, symbol, interval)
 
 async def process_and_send(message, symbol, interval):
-    status_msg = await message.reply_text(f"⏳ جاري حساب نموذج بلاك-شولز وتحليل الأسواق لـ {symbol}...")
+    status_msg = await message.reply_text(f"⏳ جاري حساب البيانات وقراءة الأخبار بواسطة الذكاء الاصطناعي لـ {symbol}...")
     res = analyze(symbol, interval)
     if not res:
         await status_msg.edit_text("❌ فشل في جلب البيانات أو إجراء التحليل.")
@@ -589,7 +659,7 @@ async def process_and_send(message, symbol, interval):
         f"• السعر العادل (Call): `{fmt_price(diff['bs_call'])}`\n"
         f"• التقلب الضمني (IV): `{diff['iv']:.1f}%`\n"
         f"• دلتا (Delta): `{diff['bs_delta']:.4f}` | جاما (Gamma): `{diff['bs_gamma']:.4f}`\n\n"
-        f"🤖 **تحليل الذكاء الاصطناعي:**\n{res['ai_analysis'] or 'غير متوفر'}"
+        f"🤖 **تحليل الذكاء الاصطناعي والأخبار الفورية:**\n{res['ai_analysis'] or 'غير متوفر'}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -598,6 +668,7 @@ def main():
         logger.error("TELEGRAM_TOKEN is missing!")
         return
     
+    # تشغيل سيرفر الويب Flask في الخلفية
     threading.Thread(target=run_flask, daemon=True).start()
     
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -605,7 +676,10 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Bot v3.3 is polling...")
+    # تشغيل مراقب السوق الخلفي للتنبيهات الاستباقية
+    threading.Thread(target=background_market_watcher, args=(application,), daemon=True).start()
+    
+    logger.info("Bot v3.5 Proactive AI & Alerts is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
