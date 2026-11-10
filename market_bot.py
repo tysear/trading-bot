@@ -7,6 +7,7 @@ import re
 import sqlite3
 import threading
 import time
+import math
 import xml.etree.ElementTree as ET
 from contextlib import closing
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from email.utils import parsedate_to_datetime
 import numpy as np
 import pandas as pd
 import requests
+from scipy.stats import norm
 from flask import Flask, Response, jsonify, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -50,13 +52,30 @@ CRYPTO_NAMES = {
     "BTC": "Bitcoin", "ETH": "Ethereum", "XRP": "XRP Ripple", "BNB": "BNB Binance",
     "SOL": "Solana", "ADA": "Cardano", "DOGE": "Dogecoin",
 }
-NEWS_QUERIES = {
-    "GC=F": "gold price", "SI=F": "silver price", "CL=F": "crude oil price",
-    "EURUSD=X": "EUR USD euro dollar", "GBPUSD=X": "GBP USD pound dollar",
-    "USDJPY=X": "USD JPY yen dollar", "^GSPC": "S&P 500", "^IXIC": "Nasdaq",
-    "^DJI": "Dow Jones", "AAPL": "Apple stock", "TSLA": "Tesla stock",
-}
 FNG_AR = {"extreme fear": "خوف شديد", "fear": "خوف", "neutral": "محايد", "greed": "طمع", "extreme greed": "طمع شديد"}
+
+# ==========================================
+# نموذج بلاك-شولز المتقدم (Black-Scholes Model)
+# ==========================================
+def black_scholes_pricing(S, K, T, r, sigma, option_type="call"):
+    if T <= 0 or sigma <= 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    
+    if option_type == "call":
+        price = S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+        delta = norm.cdf(d1)
+    else:
+        price = K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        delta = norm.cdf(d1) - 1.0
+        
+    gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+    vega = S * norm.pdf(d1) * math.sqrt(T) / 100.0
+    theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365.0
+    
+    return float(price), float(delta), float(gamma), float(theta), float(vega)
 
 # ==========================================
 # أدوات عامة
@@ -76,7 +95,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.0)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.1)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -186,11 +205,21 @@ def compute_indicators(df, interval):
     acceleration = float(np.diff(np.diff(c.iloc[-5:].values))[-1]) if len(c) >= 6 else 0.0
     cvar_val = calculate_cvar_risk(c.tolist())
 
+    # حساب التقلب التاريخي لنموذج بلاك-شولز
+    returns = np.diff(np.log(c.values[-30:]))
+    historical_vol = float(np.std(returns) * math.sqrt(365)) if len(returns) > 10 else 0.60
+
+    # تطبيق بلاك-شولز (Strike افتراضي عند السعر الحالي، ومدة 30 يوماً / سنة)
+    bs_call, bs_delta, bs_gamma, bs_theta, bs_vega = black_scholes_pricing(
+        S=price, K=price, T=30/365.0, r=0.05, sigma=max(historical_vol, 0.1), option_type="call"
+    )
+
     return {
         "price": price, "rsi": float(rsi_wilder(c).iloc[-1]), "atr": atr,
         "ema20": float(ema20.iloc[-1]), "ema50": float(ema50.iloc[-1]), "macd_hist": float(hist.iloc[-1]),
         "velocity": velocity, "acceleration": acceleration, "cvar_risk": cvar_val,
         "support_50": support, "resistance_50": resistance,
+        "bs_call": bs_call, "bs_delta": bs_delta, "bs_gamma": bs_gamma, "bs_theta": bs_theta, "bs_vega": bs_vega, "iv": historical_vol * 100
     }
 
 def quant_score(ind):
@@ -263,8 +292,8 @@ def ask_ai(payload):
     body = {
         "model": OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً واحترافياً باللغة العربية."},
-            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والرياضيات المتقدمة: {json.dumps(payload, ensure_ascii=False)}"},
+            {"role": "system", "content": "أنت محلل مالي محترف. قدم تحليلاً موجزاً واحترافياً باللغة العربية متضمناً نموذج بلاك-شولز."},
+            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات ونموذج بلاك-شولز: {json.dumps(payload, ensure_ascii=False)}"},
         ],
         "temperature": 0.2,
         "max_tokens": 400,
@@ -306,20 +335,20 @@ def analyze(symbol, interval="4h"):
         return None
 
 # ==========================================
-# لوحة تحكم ويب شاملة وكاملة التفاصيل
+# لوحة تحكم ويب شاملة مع بلاك-شولز
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.0 Ultimate Full"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.1 Black-Scholes"})
 
 @app.route("/dashboard")
 def dashboard():
     return """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8"><title>لوحة التحكم الشاملة للتداول الكمي</title>
+<meta charset="UTF-8"><title>لوحة التحكم الشاملة مع بلاك-شولز</title>
 <style>
   body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0d1117;color:#e6edf3;padding:15px;margin:0;}
   .container{max-width:550px;margin:0 auto;background:#161b22;padding:20px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.6);}
@@ -342,9 +371,6 @@ def dashboard():
   
   .news-item{margin-bottom:10px;font-size:13px;border-bottom:1px solid #30363d;padding-bottom:8px;}
   .news-item a{color:#58a6ff;text-decoration:none;}
-  .news-item a:hover{text-decoration:underline;}
-  .news-source{font-size:11px;color:#8b949e;margin-top:2px;}
-  
   .loader{text-align:center;color:#58a6ff;padding:30px;font-size:16px;}
 </style>
 </head>
@@ -357,7 +383,6 @@ def dashboard():
       <option value="SOL-USD">SOL-USD</option>
       <option value="XRP-USD">XRP-USD</option>
       <option value="GC=F">الذهب (GC=F)</option>
-      <option value="EURUSD=X">يورو/دولار (EURUSD)</option>
     </select>
     <select id="intervalSelect">
       <option value="15m">15m</option>
@@ -379,7 +404,7 @@ def dashboard():
     const interval = document.getElementById('intervalSelect').value;
     const area = document.getElementById('contentArea');
     
-    area.innerHTML = '<div class="loader">⏳ جاري جلب وحساب بيانات السوق المتقدمة...</div>';
+    area.innerHTML = '<div class="loader">⏳ جاري حساب نموذج بلاك-شولز والرياضيات المتقدمة...</div>';
     
     try {
       let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
@@ -408,27 +433,17 @@ def dashboard():
 
       let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي (Qwen)</div><div style="font-size:13px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
 
-      let fngHtml = data.fng ? `
-        <div class="card">
-          <div class="card-title">السياق والمشاعر</div>
-          <div class="row-item"><span>الخوف والطمع</span><span>${data.fng.value} (${data.fng.label_ar})</span></div>
-        </div>
-      ` : '';
-
-      let newsHtml = '';
-      if(data.news && data.news.asset && data.news.asset.length > 0) {
-        let items = data.news.asset.map(n => `
-          <div class="news-item">
-            <div>• ${n.title}</div>
-            <div class="news-source">${n.source}</div>
-          </div>
-        `).join('');
-        newsHtml = `<div class="card"><div class="card-title">أخبار الأصل</div>${items}</div>`;
-      }
-
       area.innerHTML = `
         <div class="action-banner ${actionClass}">${data.action}</div>
         ${levelsHtml}
+        <div class="card">
+          <div class="card-title">نموذج بلاك-شولز والخيارات</div>
+          <div class="row-item"><span>السعر العادل للخيار (Call)</span><span style="color:#3fb950;">${data.bs_call}</span></div>
+          <div class="row-item"><span>التقلب الضمني (IV)</span><span>${data.iv}%</span></div>
+          <div class="row-item"><span>دلتا (Delta)</span><span>${data.bs_delta}</span></div>
+          <div class="row-item"><span>جاما (Gamma)</span><span>${data.bs_gamma}</span></div>
+          <div class="row-item"><span>فيجا (Vega)</span><span>${data.bs_vega}</span></div>
+        </div>
         <div class="card">
           <div class="card-title">التحليل الكمي والتفاضلي (${data.score})</div>
           <div class="row-item"><span>السرعة (التفاضل 1)</span><span>${data.velocity}</span></div>
@@ -436,19 +451,13 @@ def dashboard():
           <div class="row-item"><span>مخاطر التكامل (CVaR)</span><span>${data.cvar}</span></div>
           <div class="row-item"><span>مؤشر القوة النسبية (RSI)</span><span>${data.rsi}</span></div>
           <div class="row-item"><span>متوسط الحركة (ATR)</span><span>${data.atr}</span></div>
-          <div class="row-item"><span>EMA20 / EMA50</span><span>${data.ema20} / ${data.ema50}</span></div>
-          <div class="row-item"><span>MACD Hist</span><span>${data.macd}</span></div>
-          <div class="row-item"><span>دعم / مقاومة</span><span>${data.support} / ${data.resistance}</span></div>
         </div>
-        ${fngHtml}
         ${aiHtml}
-        ${newsHtml}
       `;
     } catch(e) {
       area.innerHTML = '<div style="color:#da3633;text-align:center;padding:20px;">❌ حدث خطأ في الاتصال بالخادم.</div>';
     }
   }
-  // تشغيل تحليل افتراضي لـ BTC عند الفتح
   window.onload = () => { runAnalysis(); };
 </script>
 </body>
@@ -485,15 +494,13 @@ def api_analyze():
         "cvar": f"{ind['cvar_risk']:.4f}",
         "rsi": f"{ind['rsi']:.1f}",
         "atr": f"{ind['atr']:.2f}",
-        "ema20": fmt_price(ind["ema20"]),
-        "ema50": fmt_price(ind["ema50"]),
-        "macd": f"{ind['macd_hist']:.2f}",
-        "support": fmt_price(ind["support_50"]),
-        "resistance": fmt_price(ind["resistance_50"]),
+        "bs_call": fmt_price(ind["bs_call"]),
+        "iv": f"{ind['iv']:.1f}",
+        "bs_delta": f"{ind['bs_delta']:.4f}",
+        "bs_gamma": f"{ind['bs_gamma']:.4f}",
+        "bs_vega": f"{ind['bs_vega']:.4f}",
         "levels": formatted_levels,
-        "ai": res["ai_analysis"],
-        "fng": res["fear_greed"],
-        "news": res["news"]
+        "ai": res["ai_analysis"]
     })
 
 def run_flask():
@@ -510,14 +517,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 **أهلاً بك في بوت التداول الكمي المطور!**\nاختر الأصل المطلوب أدناه للتحليل الفوري بضغطة زر:",
+        "🤖 **أهلاً بك في بوت التداول الكمي المطور مع نموذج بلاك-شولز!**\nاختر الأصل المطلوب أدناه للتحليل الفوري:",
         reply_markup=reply_markup, parse_mode="Markdown"
     )
 
 async def smart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("الاستخدام: `/smart BTC-USD 4h` أو استخدم الأزرار.", parse_mode="Markdown")
+        await update.message.reply_text("الاستخدام: `/smart BTC-USD 4h`", parse_mode="Markdown")
         return
     symbol = normalize_symbol(args[0])
     interval = args[1].lower() if len(args) > 1 else "4h"
@@ -531,27 +538,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_and_send(query.message, symbol, interval)
 
 async def process_and_send(message, symbol, interval):
-    status_msg = await message.reply_text(f"⏳ جاري جلب البيانات، تطبيق التفاضل، وتحليل الذكاء الاصطناعي لـ {symbol}...")
+    status_msg = await message.reply_text(f"⏳ جاري حساب نموذج بلاك-شولز وتحليل الأسواق لـ {symbol}...")
     res = analyze(symbol, interval)
     if not res:
         await status_msg.edit_text("❌ فشل في جلب البيانات أو إجراء التحليل.")
         return
     
     diff = res['indicators']
-    levels_txt = ""
-    if res['levels']:
-        levels_txt = f"\n🎯 **مستويات التداول:**\nSL: `{fmt_price(res['levels']['sl'])}`\nTP1: `{fmt_price(res['levels']['tp1'])}`\nTP2: `{fmt_price(res['levels']['tp2'])}`\nTP3: `{fmt_price(res['levels']['tp3'])}`"
-
     msg = (
         f"📊 **تحليل {res['symbol']} ({res['interval'].upper()})**\n"
         f"السعر الحالي: `{fmt_price(res['price'])}`\n"
         f"التوصية: **{res['action']}** (النقاط: {res['quant_score']})\n\n"
-        f"📐 **التحليل الرياضي المتقدم:**\n"
-        f"• السرعة اللحظية (التفاضل 1): `{diff['velocity']:+.4f}`\n"
-        f"• التسارع (التفاضل 2): `{diff['acceleration']:+.4f}`\n"
+        f"📐 **نموذج بلاك-شولز والخيارات:**\n"
+        f"• السعر العادل (Call): `{fmt_price(diff['bs_call'])}`\n"
+        f"• التقلب الضمني (IV): `{diff['iv']:.1f}%`\n"
+        f"• دلتا (Delta): `{diff['bs_delta']:.4f}` | جاما (Gamma): `{diff['bs_gamma']:.4f}`\n\n"
+        f"📐 **التفاضل والتكامل:**\n"
+        f"• السرعة: `{diff['velocity']:+.4f}` | التسارع: `{diff['acceleration']:+.4f}`\n"
         f"• مخاطر التكامل (CVaR): `{diff['cvar_risk']:.4f}`"
-        f"{levels_txt}\n\n"
-        f"🤖 **تحليل الذكاء الاصطناعي (Qwen):**\n{res['ai_analysis'] or 'غير متوفر'}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -567,7 +571,7 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Ultimate Full Bot is polling...")
+    logger.info("Black-Scholes Bot is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
