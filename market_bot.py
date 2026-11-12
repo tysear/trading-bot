@@ -559,7 +559,6 @@ def run_flask():
 # ==========================================
 # نظام التنبيهات المجدولة في الخلفية (Background Alerts)
 # ==========================================
-# حفظ آخر تتبع للمستخدمين الذين تفاعلوا مع البوت لإرسال التنبيهات إليهم
 _active_chat_ids = set()
 
 def background_market_watcher(bot_app):
@@ -567,7 +566,6 @@ def background_market_watcher(bot_app):
     symbols_to_watch = ["BTC-USD", "ETH-USD"]
     logger.info("Background market watcher started.")
     
-    # الانتظار قليلاً حتى يبدأ السيرفر بالكامل
     time.sleep(30)
     
     while True:
@@ -575,7 +573,7 @@ def background_market_watcher(bot_app):
             if _active_chat_ids:
                 for symbol in symbols_to_watch:
                     res = analyze(symbol, "4h")
-                    if res and abs(res["quant_score"]) >= 3: # تنبيه عند وجود إشارة قوية (شراء/بيع قوي)
+                    if res and abs(res["quant_score"]) >= 3:
                         action = res["action"]
                         price = fmt_price(res["price"])
                         score = res["quant_score"]
@@ -597,7 +595,6 @@ def background_market_watcher(bot_app):
                             except Exception as ex:
                                 logger.error(f"Failed to send alert to {chat_id}: {ex}")
             
-            # فحص السوق كل ساعتين لتجنب الإزعاج المتكرر
             time.sleep(7200)
         except Exception as e:
             logger.error(f"Error in background watcher: {e}")
@@ -668,7 +665,6 @@ def main():
         logger.error("TELEGRAM_TOKEN is missing!")
         return
     
-    # تشغيل سيرفر الويب Flask في الخلفية
     threading.Thread(target=run_flask, daemon=True).start()
     
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -676,7 +672,6 @@ def main():
     application.add_handler(CommandHandler("smart", smart_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # تشغيل مراقب السوق الخلفي للتنبيهات الاستباقية
     threading.Thread(target=background_market_watcher, args=(application,), daemon=True).start()
     
     logger.info("Bot v3.5 Proactive AI & Alerts is polling...")
