@@ -95,7 +95,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.5)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/3.6)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -156,7 +156,7 @@ def get_fear_greed():
         return None
 
 # ==========================================
-# جلب البيانات والمؤشرات (التفاضل والتكامل)
+# جلب البيانات والمؤشرات والهندسة العكسية
 # ==========================================
 def fetch_binance(symbol, interval):
     pair = symbol[:-4] + "USDT"
@@ -245,12 +245,25 @@ def compute_indicators(df, interval):
         S=price, K=price, T=30/365.0, r=0.05, sigma=max(historical_vol, 0.1), option_type="call"
     )
 
+    # حساب الهندسة العكسية ومناطق صانع السوق (Smart Money & Liquidity Detection)
+    # فحص ما إذا كان السعر قرب القمة السابقة (فخ السيولة العلوية) أو القاع السقيقي (فخ وقف الخسارة)
+    distance_to_support = ((price - support) / price) * 100
+    distance_to_resistance = ((resistance - price) / price) * 100
+    
+    if distance_to_support < 1.5:
+        smc_status = "منطقة فخ سيولة سفلية (احتمال كسر كاذب لضرب الوقف وارتداد صاعد)"
+    elif distance_to_resistance < 1.5:
+        smc_status = "منطقة تجمع سيولة علوية (احتمال اختراق وهمي لتصريف العقود)"
+    else:
+        smc_status = "منطقة وسطية (مراقبة هادئة / تجميع مؤسسي)"
+
     return {
         "price": price, "rsi": float(rsi_wilder(c).iloc[-1]), "atr": atr,
         "ema20": float(ema20.iloc[-1]), "ema50": float(ema50.iloc[-1]), "macd_hist": float(hist.iloc[-1]),
         "velocity": velocity, "acceleration": acceleration, "cvar_risk": cvar_val,
         "support_50": support, "resistance_50": resistance,
-        "bs_call": bs_call, "bs_delta": bs_delta, "bs_gamma": bs_gamma, "bs_theta": bs_theta, "bs_vega": bs_vega, "iv": historical_vol * 100
+        "bs_call": bs_call, "bs_delta": bs_delta, "bs_gamma": bs_gamma, "bs_theta": bs_theta, "bs_vega": bs_vega, "iv": historical_vol * 100,
+        "smc_status": smc_status, "distance_support": distance_to_support, "distance_resistance": distance_to_resistance
     }
 
 def quant_score(ind):
@@ -290,21 +303,22 @@ def ask_ai(payload):
         return None
     
     system_prompt = (
-        "أنت محلل مالي محترف وخبير تداول كمي. قم بتقديم تحليل شامل باللغة العربية.\n"
-        "يجب أن يتضمن التحليل:\n"
-        "1. قراءة للتحليل الفني والرياضي (بلاك-شولز، السرعة، والتسارع).\n"
-        "2. تحليل الأخبار الحية المرفقة (بما فيها أخبار التضخم و CPI والفيدرالي) وتأثيرها على معنويات السوق.\n"
-        "3. خلاصة التوصية والقرار بفقرات واضحة وبدون قطع."
+        "أنت محلل مالي محترف وخبير تداول كمي متخصص في الهندسة العكسية وحركة صناع السوق (Smart Money Concepts).\n"
+        "قم بتقديم تحليل شامل باللغة العربية يتضمن حصرياً:\n"
+        "1. هندسة عكسية لسلوك صناع السوق والحيتان (أين توجد تجمعات السيولة، أين فخاخ وقف الخسارة للأفراد).\n"
+        "2. قراءة التحليل الفني والرياضي (بلاك-شولز، السرعة، والتسارع).\n"
+        "3. تأثير الأخبار الحية (الفيدرالي / التضخم / CPI) وكيف يتم استخدامها كغطاء لتح الحركات الكبرى.\n"
+        "4. خلاصة القرار بفقرات واضحة وبدون قطع."
     )
     
     body = {
         "model": OPENROUTER_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"حلل هذا الأصل بناءً على المؤشرات والأخبار الحية التالية: {json.dumps(payload, ensure_ascii=False)}"},
+            {"role": "user", "content": f"حلل هذا الأصل مع التركيز على الهندسة العكسية وصناع السوق بناءً على البيانات التالية: {json.dumps(payload, ensure_ascii=False)}"},
         ],
         "temperature": 0.2,
-        "max_tokens": 750,
+        "max_tokens": 850,
     }
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     try:
@@ -347,20 +361,20 @@ def analyze(symbol, interval="4h"):
         return None
 
 # ==========================================
-# لوحة تحكم ويب شاملة مع الأخبار ونموذج بلاك-شولز
+# لوحة تحكم ويب شاملة مع الهندسة العكسية
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.5 Proactive AI & Alerts"})
+    return jsonify({"status": "running", "bot": "Quant Trading Bot v3.6 Smart Money & Reverse Engineering"})
 
 @app.route("/dashboard")
 def dashboard():
     return """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8"><title>لوحة التحكم الشاملة للتداول الكمي</title>
+<meta charset="UTF-8"><title>لوحة التحكم - الهندسة العكسية والتداول الكمي</title>
 <style>
   body{font-family:'Segoe UI', Tahoma, sans-serif;background:#0d1117;color:#e6edf3;padding:15px;margin:0;}
   .container{max-width:550px;margin:0 auto;background:#161b22;padding:20px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.6);}
@@ -405,7 +419,7 @@ def dashboard():
       <option value="4h" selected>4h</option>
       <option value="1d">1d</option>
     </select>
-    <button class="analyze-btn" onclick="runAnalysis()">تحليل</button>
+    <button class="analyze-btn" onclick="runAnalysis()">تحليل الهندسة العكسية</button>
   </div>
 
   <div id="contentArea">
@@ -419,7 +433,7 @@ def dashboard():
     const interval = document.getElementById('intervalSelect').value;
     const area = document.getElementById('contentArea');
     
-    area.innerHTML = '<div class="loader">⏳ جاري جلب التحليل وقراءة الأخبار بواسطة الذكاء الاصطناعي...</div>';
+    area.innerHTML = '<div class="loader">⏳ جاري تفكيك صفقات صناع السوق وقراءة الأخبار...</div>';
     
     try {
       let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
@@ -446,6 +460,15 @@ def dashboard():
         `;
       }
 
+      let smcHtml = `
+        <div class="card" style="border-color:#58a6ff;">
+          <div class="card-title">🔍 الهندسة العكسية وصناع السوق (Smart Money)</div>
+          <div class="row-item"><span>حالة السيولة وفخاخ الحيتان</span><span style="color:#f0883e;">${data.smc_status}</span></div>
+          <div class="row-item"><span>الدعم المؤسسي (دعم 50)</span><span>${data.support}</span></div>
+          <div class="row-item"><span>المقاومة المؤسسي (مقاومة 50)</span><span>${data.resistance}</span></div>
+        </div>
+      `;
+
       let fngHtml = data.fng ? `
         <div class="card">
           <div class="card-title">السياق والمشاعر</div>
@@ -453,7 +476,7 @@ def dashboard():
         </div>
       ` : '';
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي شامل الأخبار (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
 
       let newsHtml = '';
       if(data.news && data.news.asset && data.news.asset.length > 0) {
@@ -479,6 +502,7 @@ def dashboard():
 
       area.innerHTML = `
         <div class="action-banner ${actionClass}">${data.action}</div>
+        ${smcHtml}
         ${levelsHtml}
         <div class="card">
           <div class="card-title">نموذج بلاك-شولز والخيارات</div>
@@ -486,7 +510,6 @@ def dashboard():
           <div class="row-item"><span>التقلب الضمني (IV)</span><span>${data.iv}%</span></div>
           <div class="row-item"><span>دلتا (Delta)</span><span>${data.bs_delta}</span></div>
           <div class="row-item"><span>جاما (Gamma)</span><span>${data.bs_gamma}</span></div>
-          <div class="row-item"><span>فيجا (Vega)</span><span>${data.bs_vega}</span></div>
         </div>
         <div class="card">
           <div class="card-title">التحليل الكمي والتفاضلي (${data.score})</div>
@@ -494,7 +517,6 @@ def dashboard():
           <div class="row-item"><span>التسارع (التفاضل 2)</span><span>${data.acceleration}</span></div>
           <div class="row-item"><span>مخاطر التكامل (CVaR)</span><span>${data.cvar}</span></div>
           <div class="row-item"><span>مؤشر القوة النسبية (RSI)</span><span>${data.rsi}</span></div>
-          <div class="row-item"><span>متوسط الحركة (ATR)</span><span>${data.atr}</span></div>
         </div>
         ${fngHtml}
         ${aiHtml}
@@ -536,6 +558,9 @@ def api_analyze():
         "price": fmt_price(res["price"]),
         "action": res["action"],
         "score": res["quant_score"],
+        "smc_status": ind["smc_status"],
+        "support": fmt_price(ind["support_50"]),
+        "resistance": fmt_price(ind["resistance_50"]),
         "velocity": f"{ind['velocity']:+.4f}",
         "acceleration": f"{ind['acceleration']:+.4f}",
         "cvar": f"{ind['cvar_risk']:.4f}",
@@ -545,7 +570,6 @@ def api_analyze():
         "iv": f"{ind['iv']:.1f}",
         "bs_delta": f"{ind['bs_delta']:.4f}",
         "bs_gamma": f"{ind['bs_gamma']:.4f}",
-        "bs_vega": f"{ind['bs_vega']:.4f}",
         "levels": formatted_levels,
         "ai": res["ai_analysis"],
         "fng": res["fear_greed"],
@@ -562,10 +586,8 @@ def run_flask():
 _active_chat_ids = set()
 
 def background_market_watcher(bot_app):
-    """مهمة تعمل في الخلفية لمراقبة الأسواق وإرسال تنبيهات قوية تلقائياً"""
     symbols_to_watch = ["BTC-USD", "ETH-USD"]
     logger.info("Background market watcher started.")
-    
     time.sleep(30)
     
     while True:
@@ -577,13 +599,15 @@ def background_market_watcher(bot_app):
                         action = res["action"]
                         price = fmt_price(res["price"])
                         score = res["quant_score"]
+                        smc = res["indicators"]["smc_status"]
                         
                         alert_msg = (
-                            f"🚨 **تنبيه قنص استباقي من البوت!**\n"
+                            f"🚨 **تنبيه هندسة عكسية وصناع السوق!**\n"
                             f"رصد فرصة قوية على `{symbol}`:\n"
                             f"• التوصية: **{action}** (النقاط: {score})\n"
                             f"• السعر الحالي: `{price}`\n"
-                            f"• ملخص الذكاء الاصطناعي:\n{res['ai_analysis'][:300]}..."
+                            f"• حالة السيولة: *{smc}*\n"
+                            f"• ملخص التحليل:\n{res['ai_analysis'][:350]}..."
                         )
                         
                         for chat_id in _active_chat_ids:
@@ -613,8 +637,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 **أهلاً بك في بوت التداول الكمي المطور (الإصدار الاستباقي v3.5)!**\n"
-        "تم تفعيل نظام المراقبة التلقائية والتنبيهات. اختر الأصل المطلوب أدناه للتحليل الفوري:",
+        "🤖 **أهلاً بك في بوت التداول الكمي (الإصدار v3.6 الهندسة العكسية ومراقبة صناع السوق)!**\n"
+        "تم تفعيل القسم المتقدم لتتبع السيولة وفخاخ الحيتان. اختر الأصل للتحليل:",
         reply_markup=reply_markup, parse_mode="Markdown"
     )
 
@@ -641,7 +665,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_and_send(query.message, symbol, interval)
 
 async def process_and_send(message, symbol, interval):
-    status_msg = await message.reply_text(f"⏳ جاري حساب البيانات وقراءة الأخبار بواسطة الذكاء الاصطناعي لـ {symbol}...")
+    status_msg = await message.reply_text(f"⏳ جاري تفكيك صفقات صناع السوق وحساب مؤشرات الهندسة العكسية لـ {symbol}...")
     res = analyze(symbol, interval)
     if not res:
         await status_msg.edit_text("❌ فشل في جلب البيانات أو إجراء التحليل.")
@@ -652,11 +676,12 @@ async def process_and_send(message, symbol, interval):
         f"📊 **تحليل {res['symbol']} ({res['interval'].upper()})**\n"
         f"السعر الحالي: `{fmt_price(res['price'])}`\n"
         f"التوصية: **{res['action']}** (النقاط: {res['quant_score']})\n\n"
+        f"🔍 **الهندسة العكسية وصناع السوق:**\n"
+        f"• حالة السيولة: *{diff['smc_status']}*\n"
+        f"• دعم الحيتان: `{fmt_price(diff['support_50'])}` | مقاومة الحيتان: `{fmt_price(diff['resistance_50'])}`\n\n"
         f"📐 **نموذج بلاك-شولز والخيارات:**\n"
-        f"• السعر العادل (Call): `{fmt_price(diff['bs_call'])}`\n"
-        f"• التقلب الضمني (IV): `{diff['iv']:.1f}%`\n"
-        f"• دلتا (Delta): `{diff['bs_delta']:.4f}` | جاما (Gamma): `{diff['bs_gamma']:.4f}`\n\n"
-        f"🤖 **تحليل الذكاء الاصطناعي والأخبار الفورية:**\n{res['ai_analysis'] or 'غير متوفر'}"
+        f"• السعر العادل (Call): `{fmt_price(diff['bs_call'])}` | التقلب الضمني (IV): `{diff['iv']:.1f}%`\n\n"
+        f"🤖 **تحليل الذكاء الاصطناعي وهندسة السوق:**\n{res['ai_analysis'] or 'غير متوفر'}"
     )
     await status_msg.edit_text(msg, parse_mode="Markdown")
 
@@ -674,7 +699,7 @@ def main():
     
     threading.Thread(target=background_market_watcher, args=(application,), daemon=True).start()
     
-    logger.info("Bot v3.5 Proactive AI & Alerts is polling...")
+    logger.info("Bot v3.6 Smart Money & Reverse Engineering is polling...")
     application.run_polling()
 
 if __name__ == "__main__":
