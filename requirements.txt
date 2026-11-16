@@ -3,5 +3,8 @@ numpy
 pandas
 requests
 Flask
+fastapi
+uvicorn
+websockets
 python-telegram-bot
 yfinance
