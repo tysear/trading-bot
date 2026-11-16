@@ -52,7 +52,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# دالة إرسال التنبيهات للداشبورد وتيليجرام
+# دالة إرسال التنبيهات للداشبورد
 async def send_quant_alert(alert_type: str, message: str, score: float, price: float):
     payload = {
         "type": alert_type,
@@ -67,13 +67,17 @@ async def send_quant_alert(alert_type: str, message: str, score: float, price: f
 # محرك التداول الكمي في الخلفية
 async def trading_bot_engine():
     logger.info("تم بدء تشغيل محرك التداول الكمي v3.6 في الخلفية...")
+    # إرسال تنبيه تجريبي فور الإقلاع للتأكد من عمل النظام والداشبورد
+    await asyncio.sleep(5)
+    await send_quant_alert("BUY_REVERSAL", "تم رصد امتصاص سيولة وارتداد إيجابي قرب الدعم بنجاح", 86.18, 64942.0)
+    
     while True:
         try:
             current_price = 64942.0
             quant_score = 86.18
             
-            # مثال تجريبي لاختبار التنبيه (يمكنك تفعيله لرؤية ظهور التنبيهات فوراً)
-            # await send_quant_alert("BUY_REVERSAL", "تم رصد امتصاص سيولة وارتداد إيجابي قرب الدعم", quant_score, current_price)
+            # سيقوم بإرسال تنبيه دوري كل دقيقة للتجربة
+            await send_quant_alert("BUY_REVERSAL", "فحص دوري: النظام يراقب فخاخ السيولة بنجاح", quant_score, current_price)
             
             await asyncio.sleep(60)
         except Exception as e:
@@ -112,7 +116,7 @@ def read_root():
         
         <h3>التنبيهات الواردة لحظياً:</h3>
         <div id="alerts-container">
-            <div class="alert-box">
+            <div class="alert-box alert-success">
                 <strong>النظام جاهز</strong>: تم تشغيل خادم التنبيهات والاتصال الحي بنجاح. <br>
                 <small>الحالة: <b>مستعد لاستقبال إشارات الذكاء الكمي وفخاخ السيولة</b></small>
                 <div class="alert-time">وقت التشغيل: الآن</div>
