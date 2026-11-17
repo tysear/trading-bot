@@ -167,6 +167,3 @@ def read_root():
     </html>
     """
     return html_content
-
-if __name__ == "__main__":
-    uvicorn.run("market_bot:app", host="0.0.0.0", port=8000)
