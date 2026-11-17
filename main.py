@@ -67,7 +67,6 @@ async def send_quant_alert(alert_type: str, message: str, score: float, price: f
 # محرك التداول الكمي في الخلفية
 async def trading_bot_engine():
     logger.info("تم بدء تشغيل محرك التداول الكمي v3.6 في الخلفية...")
-    # إرسال تنبيه تجريبي فور الإقلاع للتأكد من عمل النظام والداشبورد
     await asyncio.sleep(5)
     await send_quant_alert("BUY_REVERSAL", "تم رصد امتصاص سيولة وارتداد إيجابي قرب الدعم بنجاح", 86.18, 64942.0)
     
@@ -75,10 +74,7 @@ async def trading_bot_engine():
         try:
             current_price = 64942.0
             quant_score = 86.18
-            
-            # سيقوم بإرسال تنبيه دوري كل دقيقة للتجربة
             await send_quant_alert("BUY_REVERSAL", "فحص دوري: النظام يراقب فخاخ السيولة بنجاح", quant_score, current_price)
-            
             await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"خطأ في حلقة البوت: {e}")
@@ -88,7 +84,7 @@ async def trading_bot_engine():
 async def startup_event():
     asyncio.create_task(trading_bot_engine())
 
-# صفحة لوحة التحكم (Dashboard UI) المدمجة
+# صفحة لوحة التحكم (Dashboard UI) المدمجة والرئيسية
 @app.get("/", response_class=HTMLResponse)
 def read_root():
     html_content = """
