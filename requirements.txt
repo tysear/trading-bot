@@ -2,9 +2,7 @@ scipy
 numpy
 pandas
 requests
-Flask
-fastapi
-uvicorn
-websockets
-python-telegram-bot
+flask
+flask-sock
 yfinance
+python-telegram-bot
