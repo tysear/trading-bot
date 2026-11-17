@@ -26,7 +26,6 @@ logger = logging.getLogger("quantbot")
 # ==========================================
 # الإعدادات
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -34,11 +33,11 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 BINANCE_SPOT_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
 CACHE_TTL = {"15m": 120, "1h": 300, "4h": 600, "1d": 1800}
 
-CRYPTO_NAMES = {
-    "BTC": "Bitcoin", "ETH": "Ethereum", "XRP": "XRP Ripple", "BNB": "BNB Binance",
-    "SOL": "Solana", "ADA": "Cardano", "DOGE": "Dogecoin",
-}
 FNG_AR = {"extreme fear": "خوف شديد", "fear": "خوف", "neutral": "محايد", "greed": "طمع", "extreme greed": "طمع شديد"}
+
+# قائمة المتصلين عبر WebSockets لبث التنبيهات التلقائية لهم
+_ws_clients = set()
+_ws_lock = threading.Lock()
 
 # ==========================================
 # نموذج بلاك-شولز المتقدم (Black-Scholes Model)
@@ -81,7 +80,7 @@ def cache_set(key, value):
         _cache[key] = (value, time.time())
     return value
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/4.0)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/4.1)"}
 
 def http_get(url, params=None, timeout=12):
     try:
@@ -205,7 +204,7 @@ def calculate_cvar_risk(prices, confidence_level=0.95):
     return float(cvar) if not np.isnan(cvar) else 0.0
 
 def compute_indicators(df, interval):
-    c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
+    c, h, l = df["close"], df["high"], df["low"]
     ema20 = c.ewm(span=20, adjust=False).mean()
     ema50 = c.ewm(span=50, adjust=False).mean()
     macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
@@ -276,7 +275,7 @@ def trade_levels(action, price, atr):
 
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
-        return "الذكاء الاصطناعي غير متاحة؛ القرار مبني على التحليل الكمي وكلمات الأخبار فقط."
+        return "الذكاء الاصطناعي غير متاحة؛ يرجى التحقق من إضافة المفتاح وعمل Redeploy."
     
     system_prompt = (
         "أنت محلل مالي محترف وخبير تداول كمي متخصص في الهندسة العكسية وحركة صناع السوق (Smart Money Concepts).\n"
@@ -301,11 +300,14 @@ def ask_ai(payload):
         if res.status_code == 200:
             content = res.json()["choices"][0]["message"]["content"]
             return content.replace("###", "").replace("**", "").strip()
+        else:
+            logger.error(f"OpenRouter HTTP {res.status_code}: {res.text}")
+            return f"خطأ من مزود الذكاء الاصطناعي (رمز {res.status_code}) - تأكد من صلاحية المفتاح والرصيد."
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return "الذكاء الاصطناعي غير متاحة حالياً."
+    return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
 
-def analyze(symbol, interval="4h"):
+def analyze(symbol, interval="4h", include_ai=True):
     try:
         df = fetch_ohlcv(symbol, interval)
         if df is None: return None
@@ -315,12 +317,14 @@ def analyze(symbol, interval="4h"):
         news = get_news(symbol)
         fng = get_fear_greed()
 
-        payload = {
-            "symbol": symbol, "interval": interval,
-            "technical": ind, "quant_action": qaction, "score": qscore,
-            "fear_and_greed": fng, "latest_news": news
-        }
-        ai_comment = ask_ai(payload)
+        ai_comment = None
+        if include_ai:
+            payload = {
+                "symbol": symbol, "interval": interval,
+                "technical": ind, "quant_action": qaction, "score": qscore,
+                "fear_and_greed": fng, "latest_news": news
+            }
+            ai_comment = ask_ai(payload)
 
         return {
             "symbol": symbol, "interval": interval, "price": ind["price"],
@@ -331,6 +335,56 @@ def analyze(symbol, interval="4h"):
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return None
+
+# ==========================================
+# بث التنبيهات التلقائية ومراقب السوق في الخلفية
+# ==========================================
+def broadcast_alert(alert_data):
+    msg = json.dumps({"type": "AUTO_ALERT", "alert": alert_data}, ensure_ascii=False)
+    with _ws_lock:
+        dead_clients = set()
+        for client in _ws_clients:
+            try:
+                client.send(msg)
+            except Exception:
+                dead_clients.add(client)
+        _ws_clients.difference_update(dead_clients)
+
+def auto_market_scanner():
+    watchlist = [("BTC-USD", "1h"), ("ETH-USD", "1h"), ("SOL-USD", "1h"), ("XRP-USD", "1h"), ("GC=F", "1h")]
+    logger.info("Auto Market Scanner started in background...")
+    time.sleep(10)
+    
+    while True:
+        try:
+            for symbol, interval in watchlist:
+                res = analyze(symbol, interval, include_ai=False)
+                if not res:
+                    continue
+                
+                ind = res["indicators"]
+                is_strong_signal = abs(res["quant_score"]) >= 2
+                is_trap_zone = ind["distance_support"] < 1.5 or ind["distance_resistance"] < 1.5
+                
+                if is_strong_signal or is_trap_zone:
+                    alert_payload = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "action": res["action"],
+                        "price": fmt_price(res["price"]),
+                        "score": res["quant_score"],
+                        "smc_status": ind["smc_status"],
+                        "time": datetime.now(timezone.utc).strftime("%H:%M UTC")
+                    }
+                    broadcast_alert(alert_payload)
+                    logger.info(f"Broadcasted auto alert for {symbol}: {res['action']}")
+                
+                time.sleep(5)
+        except Exception as e:
+            logger.error(f"Scanner error: {e}")
+        
+        # فحص الأسواق كل 5 دقائق
+        time.sleep(300)
 
 # ==========================================
 # خادم الويب وتطبيق Flask مع WebSockets
@@ -350,7 +404,7 @@ def dashboard():
 def api_analyze():
     symbol = request.args.get("symbol", "BTC-USD")
     interval = request.args.get("interval", "4h")
-    res = analyze(symbol, interval)
+    res = analyze(symbol, interval, include_ai=True)
     if not res:
         return jsonify({"success": False})
     
@@ -395,21 +449,18 @@ def api_analyze():
 
 @sock.route('/ws/alerts')
 def websocket_alerts(ws):
-    while True:
-        try:
+    with _ws_lock:
+        _ws_clients.add(ws)
+    try:
+        while True:
             data = ws.receive()
-            if data:
-                req = json.loads(data)
-                symbol = req.get("symbol", "BTC-USD")
-                interval = req.get("interval", "4h")
-                res = analyze(symbol, interval)
-                if res:
-                    ws.send(json.dumps({"success": True, "data": res}))
-                else:
-                    ws.send(json.dumps({"success": False}))
-        except Exception as e:
-            logger.error(f"WebSocket error: {e}")
-            break
+            if data is None:
+                break
+    except Exception:
+        pass
+    finally:
+        with _ws_lock:
+            _ws_clients.discard(ws)
 
 def dashboard_html():
     return """<!DOCTYPE html>
@@ -426,6 +477,14 @@ def dashboard_html():
   button.analyze-btn{background:#238636;color:#fff;font-weight:bold;flex:2;border:none;}
   button.analyze-btn:hover{background:#2ea043;}
   
+  /* خانة التنبيهات التلقائية الحية */
+  .auto-alerts-box{background:#1c2128;border:1px solid #f0883e;border-radius:10px;padding:12px;margin-bottom:15px;}
+  .auto-alerts-header{display:flex;justify-content:space-between;align-items:center;color:#f0883e;font-weight:bold;font-size:14px;margin-bottom:8px;}
+  .auto-alert-item{background:#0d1117;border-right:4px solid #f0883e;padding:10px;border-radius:6px;margin-bottom:8px;font-size:13px;}
+  .auto-alert-item.buy-alert{border-right-color:#3fb950;}
+  .auto-alert-item.sell-alert{border-right-color:#da3633;}
+  .load-alert-btn{background:#30363d;color:#58a6ff;border:none;padding:4px 8px;border-radius:4px;font-size:11px;margin-top:6px;cursor:pointer;}
+
   .action-banner{padding:18px;border-radius:10px;text-align:center;font-size:22px;font-weight:bold;margin-bottom:15px;}
   .buy{background:#238636;color:#fff;}
   .sell{background:#da3633;color:#fff;}
@@ -449,6 +508,7 @@ def dashboard_html():
 <body>
 <div class="container">
   <div class="ws-status" id="wsStatus">🟢 الويب سوكيت: متصل (Live)</div>
+  
   <div class="top-bar">
     <select id="symbolSelect">
       <option value="BTC-USD">BTC-USD</option>
@@ -466,6 +526,19 @@ def dashboard_html():
     <button class="analyze-btn" onclick="runAnalysis()">تحليل فوري</button>
   </div>
 
+  <!-- خانة التنبيهات التلقائية الحية -->
+  <div class="auto-alerts-box">
+    <div class="auto-alerts-header">
+      <span>🚨 رادار التنبيهات التلقائية الحية (Auto-Alerts)</span>
+      <span style="font-size:11px;color:#8b949e;">فحص كل 5 دقائق</span>
+    </div>
+    <div id="autoAlertsList">
+      <div style="font-size:12px;color:#8b949e;text-align:center;padding:8px;">
+        الرادار نشط يراقب (BTC, ETH, SOL, XRP, الذهب).. ستظهر التنبيهات هنا تلقائياً فور رصد سيولة أو إشارة قوية.
+      </div>
+    </div>
+  </div>
+
   <div id="contentArea">
     <div class="loader">اختر الأصل والفترة الزمنية واضغط على تحليل...</div>
   </div>
@@ -477,12 +550,49 @@ def dashboard_html():
     const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(proto + window.location.host + '/ws/alerts');
     ws.onopen = () => { document.getElementById('wsStatus').innerText = '🟢 الويب سوكيت: متصل (Live)'; };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'AUTO_ALERT' && msg.alert) {
+          addAutoAlertToUI(msg.alert);
+        }
+      } catch (e) {}
+    };
     ws.onclose = () => { 
       document.getElementById('wsStatus').innerText = '🔴 الويب سوكيت: انقطع الاتصال، جاري إعادة المحاولة...';
       setTimeout(initWebSocket, 3000);
     };
   }
   initWebSocket();
+
+  function addAutoAlertToUI(alert) {
+    const list = document.getElementById('autoAlertsList');
+    if (list.innerText.includes('الرادار نشط يراقب')) {
+      list.innerHTML = '';
+    }
+    const cls = alert.action.includes('شراء') ? 'buy-alert' : alert.action.includes('بيع') ? 'sell-alert' : '';
+    const item = document.createElement('div');
+    item.className = `auto-alert-item ${cls}`;
+    item.innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-weight:bold;">
+        <span>🔔 ${alert.symbol} (${alert.interval}) — ${alert.action}</span>
+        <span style="color:#8b949e;font-size:11px;">${alert.time}</span>
+      </div>
+      <div style="margin-top:4px;color:#c9d1d9;">السعر: <b>${alert.price}</b> | التقييم: <b>${alert.score}</b></div>
+      <div style="margin-top:3px;color:#f0883e;font-size:12px;">${alert.smc_status}</div>
+      <button class="load-alert-btn" onclick="loadAlertAnalysis('${alert.symbol}', '${alert.interval}')">عرض التحليل الكامل والذكاء الاصطناعي ⬅️</button>
+    `;
+    list.prepend(item);
+    if (list.children.length > 5) {
+      list.removeChild(list.lastChild);
+    }
+  }
+
+  function loadAlertAnalysis(sym, intv) {
+    document.getElementById('symbolSelect').value = sym;
+    document.getElementById('intervalSelect').value = intv;
+    runAnalysis();
+  }
 
   async function runAnalysis() {
     const symbol = document.getElementById('symbolSelect').value;
@@ -602,8 +712,9 @@ def dashboard_html():
 # تشغيل التطبيق
 # ==========================================
 def main():
+    threading.Thread(target=auto_market_scanner, daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting Flask-Sock server on port {port}...")
+    logger.info(f"Starting Flask-Sock server with Auto-Scanner on port {port}...")
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
