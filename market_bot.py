@@ -1,6 +1,6 @@
 """
-Quant Trading Bot v3.0 (web)
-============================
+Quant Trading Bot v3.0.1 (web)
+==============================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
 
@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 from contextlib import closing
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -125,14 +126,20 @@ def cache_set(key, value):
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantBot/2.0)"}
 
 
+HTTP_LAST = {"msg": ""}
+
+
 def http_get(url, params=None, timeout=12):
+    host = urlparse(url).netloc
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
         if r.status_code == 200:
             return r
         logger.warning("HTTP %s from %s", r.status_code, url)
+        HTTP_LAST["msg"] = f"HTTP {r.status_code} من {host}"
     except requests.RequestException as e:
         logger.warning("Request failed %s: %s", url, e)
+        HTTP_LAST["msg"] = f"تعذر الاتصال بـ {host}"
     return None
 
 
@@ -192,6 +199,31 @@ def fetch_binance(symbol, interval):
     return None
 
 
+KRAKEN_PAIRS = {"BTC": "XBTUSD", "ETH": "ETHUSD", "XRP": "XRPUSD", "SOL": "SOLUSD",
+                "ADA": "ADAUSD", "DOGE": "DOGEUSD"}
+KRAKEN_INTERVALS = {"15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+
+
+def fetch_kraken(symbol, interval):
+    pair = KRAKEN_PAIRS.get(symbol[:-4])
+    if not pair:
+        return None
+    r = http_get("https://api.kraken.com/0/public/OHLC", {"pair": pair, "interval": KRAKEN_INTERVALS[interval]})
+    try:
+        result = r.json()["result"]
+        rows = next(v for k, v in result.items() if k != "last")
+    except (AttributeError, KeyError, ValueError, StopIteration, TypeError):
+        return None
+    if not isinstance(rows, list) or len(rows) < 60:
+        return None
+    df = pd.DataFrame(rows).iloc[:, :7].tail(300)
+    df.columns = ["time", "open", "high", "low", "close", "vwap", "volume"]
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+    df.index = pd.to_datetime(df["time"].astype(float), unit="s", utc=True)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
 def fetch_yfinance(symbol, interval):
     if yf is None:
         return None
@@ -221,6 +253,8 @@ def fetch_ohlcv(symbol, interval):
     if cached is not None:
         return cached
     df = fetch_binance(symbol, interval) if is_crypto(symbol) else None
+    if df is None and is_crypto(symbol):
+        df = fetch_kraken(symbol, interval)
     if df is None:
         df = fetch_yfinance(symbol, interval)
     return cache_set(key, df) if df is not None else None
@@ -651,10 +685,16 @@ def combine(quant_action, ai):
 # ==========================================
 # التحليل الموحد
 # ==========================================
+ANALYSIS_STATUS = {"error": ""}
+
+
 def analyze(symbol, interval="4h", source=None):
+    ANALYSIS_STATUS["error"] = ""
+    HTTP_LAST["msg"] = ""
     try:
         df = fetch_ohlcv(symbol, interval)
         if df is None:
+            ANALYSIS_STATUS["error"] = f"تعذر جلب بيانات الأسعار ({HTTP_LAST['msg'] or 'لا توجد بيانات من المصادر'})"
             return None
         ind = compute_indicators(df, interval)
         qscore, qreasons = quant_score(ind)
@@ -716,8 +756,9 @@ def analyze(symbol, interval="4h", source=None):
         if source and ai:  # لا نسجل إلا الإشارات التي حللها الذكاء الاصطناعي
             result["signal_id"] = record_signal(result, source)
         return result
-    except Exception:
+    except Exception as e:
         logger.exception("Analysis failed for %s", symbol)
+        ANALYSIS_STATUS["error"] = f"خطأ داخلي ({type(e).__name__}): {str(e)[:120]}"
         return None
 
 
@@ -1217,7 +1258,8 @@ def api_analyze():
         return jsonify({"error": "رمز أو فريم غير صالح"}), 400
     result = analyze(symbol, tf, source="dashboard")
     if not result:
-        return jsonify({"error": f"فشل تحليل {symbol}"}), 400
+        detail = ANALYSIS_STATUS["error"]
+        return jsonify({"error": f"فشل تحليل {symbol}" + (f": {detail}" if detail else "")}), 400
     return jsonify(clean(result))
 
 
