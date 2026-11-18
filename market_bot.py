@@ -27,7 +27,9 @@ logger = logging.getLogger("quantbot")
 # الإعدادات
 # ==========================================
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+# تم ضبط النموذج الافتراضي هنا ليستخدم openrouter/free تلقائياً
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 BINANCE_SPOT_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
 CACHE_TTL = {"15m": 120, "1h": 300, "4h": 600, "1d": 1800}
@@ -272,6 +274,9 @@ def trade_levels(action, price, atr):
         "tp3": price + d * 4.5 * atr,
     }
 
+# ==========================================
+# دالة الذكاء الاصطناعي (محدثة خصيصاً للنموذج المجاني)
+# ==========================================
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         return "الذكاء الاصطناعي غير متاحة؛ يرجى التحقق من إضافة المفتاح وعمل Redeploy."
@@ -285,7 +290,7 @@ def ask_ai(payload):
     )
     
     body = {
-        "model": OPENROUTER_MODEL,
+        "model": OPENROUTER_MODEL,  # ستستخدم openrouter/free تلقائياً
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"حلل هذا الأصل مع التركيز على الهندسة العكسية وصناع السوق بناءً على البيانات التالية: {json.dumps(payload, ensure_ascii=False)}"},
@@ -293,15 +298,28 @@ def ask_ai(payload):
         "temperature": 0.2,
         "max_tokens": 600,
     }
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://railway.app",
+        "X-Title": "Quantitative Trading Dashboard",
+        "Content-Type": "application/json"
+    }
+    
     try:
         res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=25)
         if res.status_code == 200:
-            content = res.json()["choices"][0]["message"]["content"]
-            return content.replace("###", "").replace("**", "").strip()
+            data = res.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0]["message"]["content"]
+                return content.replace("###", "").replace("**", "").strip()
+            else:
+                return "استجابة غير متوقعة من خادم الذكاء الاصطناعي."
+        elif res.status_code == 402:
+            return "خطأ من مزود الذكاء الاصطناعي (رمز 402) - تأكد من ضبط النموذج على openrouter/free في المتغيرات."
         else:
             logger.error(f"OpenRouter HTTP {res.status_code}: {res.text}")
-            return f"خطأ من مزود الذكاء الاصطناعي (رمز {res.status_code}) - تأكد من صلاحية المفتاح والرصيد."
+            return f"خطأ من مزود الذكاء الاصطناعي (رمز {res.status_code})."
     except Exception as e:
         logger.error(f"AI Error: {e}")
     return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
@@ -382,7 +400,6 @@ def auto_market_scanner():
         except Exception as e:
             logger.error(f"Scanner error: {e}")
         
-        # فحص الأسواق كل 5 دقائق
         time.sleep(300)
 
 # ==========================================
@@ -476,7 +493,6 @@ def dashboard_html():
   button.analyze-btn{background:#238636;color:#fff;font-weight:bold;flex:2;border:none;}
   button.analyze-btn:hover{background:#2ea043;}
   
-  /* خانة التنبيهات التلقائية الحية */
   .auto-alerts-box{background:#1c2128;border:1px solid #f0883e;border-radius:10px;padding:12px;margin-bottom:15px;}
   .auto-alerts-header{display:flex;justify-content:space-between;align-items:center;color:#f0883e;font-weight:bold;font-size:14px;margin-bottom:8px;}
   .auto-alert-item{background:#0d1117;border-right:4px solid #f0883e;padding:10px;border-radius:6px;margin-bottom:8px;font-size:13px;}
@@ -525,7 +541,6 @@ def dashboard_html():
     <button class="analyze-btn" onclick="runAnalysis()">تحليل فوري</button>
   </div>
 
-  <!-- خانة التنبيهات التلقائية الحية -->
   <div class="auto-alerts-box">
     <div class="auto-alerts-header">
       <span>🚨 رادار التنبيهات التلقائية الحية (Auto-Alerts)</span>
