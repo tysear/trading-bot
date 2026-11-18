@@ -274,7 +274,7 @@ def trade_levels(action, price, atr):
     }
 
 # ==========================================
-# دالة الذكاء الاصطناعي (محدثة لتجنب أخطاء 400/404)
+# دالة الذكاء الاصطناعي (مع الترويسات المطلوبة لـ OpenRouter)
 # ==========================================
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
@@ -292,6 +292,8 @@ def ask_ai(payload):
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://railway.app",
+        "X-Title": "Quantitative Trading Dashboard",
         "Content-Type": "application/json"
     }
     
