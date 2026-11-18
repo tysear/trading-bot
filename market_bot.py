@@ -27,8 +27,7 @@ logger = logging.getLogger("quantbot")
 # الإعدادات
 # ==========================================
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-# تم ضبط النموذج الافتراضي هنا ليستخدم openrouter/free تلقائياً
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 BINANCE_SPOT_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
@@ -275,34 +274,24 @@ def trade_levels(action, price, atr):
     }
 
 # ==========================================
-# دالة الذكاء الاصطناعي (محدثة خصيصاً للنموذج المجاني)
+# دالة الذكاء الاصطناعي (محدثة لتجنب أخطاء 400/404)
 # ==========================================
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         return "الذكاء الاصطناعي غير متاحة؛ يرجى التحقق من إضافة المفتاح وعمل Redeploy."
     
-    system_prompt = (
-        "أنت محلل مالي محترف وخبير تداول كمي متخصص في الهندسة العكسية وحركة صناع السوق (Smart Money Concepts).\n"
-        "قم بتقديم تحليل شامل باللغة العربية يتضمن حصرياً:\n"
-        "1. هندسة عكسية لسلوك صناع السوق والحيتان.\n"
-        "2. قراءة التحليل الفني والرياضي.\n"
-        "3. خلاصة القرار بفقرات واضحة."
-    )
-    
     body = {
-        "model": OPENROUTER_MODEL,  # ستستخدم openrouter/free تلقائياً
+        "model": OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"حلل هذا الأصل مع التركيز على الهندسة العكسية وصناع السوق بناءً على البيانات التالية: {json.dumps(payload, ensure_ascii=False)}"},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 600,
+            {
+                "role": "user",
+                "content": f"بصفتك خبير تداول كمي وهندسة عكسية، قدم تحليلاً مختصراً وواضحاً باللغة العربية بناءً على هذه البيانات: {json.dumps(payload, ensure_ascii=False)}"
+            }
+        ]
     }
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://railway.app",
-        "X-Title": "Quantitative Trading Dashboard",
         "Content-Type": "application/json"
     }
     
@@ -311,18 +300,14 @@ def ask_ai(payload):
         if res.status_code == 200:
             data = res.json()
             if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0]["message"]["content"]
-                return content.replace("###", "").replace("**", "").strip()
-            else:
-                return "استجابة غير متوقعة من خادم الذكاء الاصطناعي."
-        elif res.status_code == 402:
-            return "خطأ من مزود الذكاء الاصطناعي (رمز 402) - تأكد من ضبط النموذج على openrouter/free في المتغيرات."
+                return data["choices"][0]["message"]["content"].strip()
+            return "استجابة فارغة من النموذج."
         else:
             logger.error(f"OpenRouter HTTP {res.status_code}: {res.text}")
             return f"خطأ من مزود الذكاء الاصطناعي (رمز {res.status_code})."
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
+        return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
 
 def analyze(symbol, interval="4h", include_ai=True):
     try:
@@ -666,7 +651,7 @@ def dashboard_html():
         </div>
       ` : '';
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق (Qwen)</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
 
       let newsHtml = '';
       if(data.news && data.news.asset && data.news.asset.length > 0) {
