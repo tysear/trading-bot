@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v3.0.1 (web)
+Quant Trading Bot v3.0.2 (web)
 ==============================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
@@ -607,6 +607,8 @@ SYSTEM_PROMPT = (
 
 
 def _parse_ai_json(text):
+    if not isinstance(text, str):
+        return None
     text = re.sub(r"```(?:json)?", "", text).strip()
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
@@ -628,21 +630,27 @@ def ask_ai(payload):
             {"role": "user", "content": "Snapshot:\n" + json.dumps(payload, ensure_ascii=False)},
         ],
         "temperature": 0.2,
-        "max_tokens": 800,
+        "max_tokens": 1200,
     }
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     AI_STATUS["error"] = ""
     for attempt in range(2):
         try:
-            res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=60)
+            res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=50)
             if res.status_code != 200:
                 logger.warning("OpenRouter HTTP %s: %s", res.status_code, res.text[:200])
                 AI_STATUS["error"] = f"HTTP {res.status_code}"
                 continue
-            content = res.json()["choices"][0]["message"]["content"]
+            reply = res.json()
+            if isinstance(reply, dict) and reply.get("error"):
+                err = reply["error"]
+                AI_STATUS["error"] = str(err.get("message") if isinstance(err, dict) else err)[:80]
+                continue
+            message = reply["choices"][0]["message"]
+            content = message.get("content") or message.get("reasoning") or ""
             data = _parse_ai_json(content)
             if not data:
-                AI_STATUS["error"] = "رد غير مفهوم من النموذج"
+                AI_STATUS["error"] = "رد فارغ أو غير مفهوم من النموذج"
                 continue
             action = next((a for a in ACTIONS if a == str(data.get("action", "")).strip()), None)
             if action is None:
@@ -661,7 +669,7 @@ def ask_ai(payload):
                 "risks": [str(r)[:160] for r in risks[:3]],
                 "invalidation": str(data.get("invalidation", ""))[:240],
             }
-        except (requests.RequestException, KeyError, IndexError, ValueError) as e:
+        except (requests.RequestException, KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
             logger.warning("AI attempt %s failed: %s", attempt + 1, e)
             AI_STATUS["error"] = type(e).__name__
     return None
@@ -719,7 +727,12 @@ def analyze(symbol, interval="4h", source=None):
             "macro_news": [{"title": n["title"], "source": n["source"], "age_hours": n["age_h"]}
                            for n in news["macro"]],
         }
-        ai = ask_ai(payload)
+        try:
+            ai = ask_ai(payload)
+        except Exception as e:
+            logger.exception("AI call crashed")
+            AI_STATUS["error"] = f"{type(e).__name__}: {str(e)[:60]}"
+            ai = None
 
         note = None
         if ai:
