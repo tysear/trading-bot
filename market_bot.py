@@ -1,12 +1,13 @@
 """
-Quant Trading Bot v3.0.2 (web)
-==============================
+Quant Trading Bot v3.1 (web)
+============================
 تحليل فني نظيف + مشتقات + مشاعر السوق + أخبار الأصل والأخبار الكلية،
 ثم يقوم الذكاء الاصطناعي بتحليل كل ذلك معاً وإصدار القرار النهائي.
 
 المتغيرات البيئية:
   OPENROUTER_API_KEY  مفتاح OpenRouter
-  OPENROUTER_MODEL    اختياري (الافتراضي openrouter/free)
+  OPENROUTER_MODEL    اختياري: نموذج أو عدة نماذج مفصولة بفاصلة (الافتراضي openrouter/free)
+  OPENROUTER_AUTO     اختياري: 0 لإيقاف تجربة نماذج مجانية بديلة تلقائياً عند فشل النموذج
   DASHBOARD_TOKEN     اختياري: يحمي الداشبورد و API  (افتح /dashboard?token=...)
   NTFY_TOPIC          اختياري: إشعارات على الجوال عبر ntfy.sh (اختر اسماً طويلاً يصعب تخمينه)
   TRACKER_DB          مسار قاعدة بيانات الإشارات (الافتراضي signals.db). على Railway أضف Volume
@@ -619,26 +620,66 @@ def _parse_ai_json(text):
         return None
 
 
+OPENROUTER_AUTO = os.environ.get("OPENROUTER_AUTO", "1").strip() != "0"
+AI_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+def auto_free_models(limit=4):
+    # قائمة النماذج المجانية المتاحة الآن من OpenRouter (بدون نماذج التفكير/الرؤية لأنها تعيد ردوداً فارغة غالباً)
+    cached = cache_get("free_models", 6 * 3600)
+    if cached is not None:
+        return cached
+    r = http_get(AI_MODELS_URL, timeout=20)
+    found = []
+    try:
+        for item in r.json()["data"]:
+            mid = str(item.get("id", ""))
+            if not mid.endswith(":free"):
+                continue
+            if re.search(r"r1|reason|think|qwq|\bo[13]\b|vision|[-/]vl\b|embed|guard|image|audio", mid, re.I):
+                continue
+            found.append((int(item.get("context_length") or 0), mid))
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return []
+    found.sort(reverse=True)
+    ids = [mid for _, mid in found[:limit]]
+    return cache_set("free_models", ids) if ids else []
+
+
+def candidate_models():
+    models = [x.strip() for x in OPENROUTER_MODEL.split(",") if x.strip()]
+    wants_auto = OPENROUTER_AUTO or any(x.lower() == "auto" for x in models)
+    models = [x for x in models if x.lower() != "auto"]
+    if wants_auto:
+        models += auto_free_models()
+    out = []
+    for x in models:
+        if x not in out:
+            out.append(x)
+    return out[:5] or ["openrouter/free"]
+
+
 def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         AI_STATUS["error"] = "مفتاح OpenRouter غير مضبوط"
         return None
-    body = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "Snapshot:\n" + json.dumps(payload, ensure_ascii=False)},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 1200,
-    }
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "Snapshot:\n" + json.dumps(payload, ensure_ascii=False)},
+    ]
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     AI_STATUS["error"] = ""
-    for attempt in range(2):
+    deadline, tried = time.time() + 75, 0
+    for model in candidate_models():
+        remaining = deadline - time.time()
+        if remaining < 10:
+            break
+        tried += 1
         try:
-            res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=50)
+            res = requests.post(OPENROUTER_API_URL, headers=headers, timeout=min(35, remaining),
+                                json={"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 1200})
             if res.status_code != 200:
-                logger.warning("OpenRouter HTTP %s: %s", res.status_code, res.text[:200])
+                logger.warning("OpenRouter %s HTTP %s: %s", model, res.status_code, res.text[:200])
                 AI_STATUS["error"] = f"HTTP {res.status_code}"
                 continue
             reply = res.json()
@@ -654,6 +695,7 @@ def ask_ai(payload):
                 continue
             action = next((a for a in ACTIONS if a == str(data.get("action", "")).strip()), None)
             if action is None:
+                AI_STATUS["error"] = "توصية النموذج بصيغة غير صالحة"
                 continue
             try:
                 sentiment = int(np.clip(int(data.get("news_sentiment", 0)), -2, 2))
@@ -668,10 +710,13 @@ def ask_ai(payload):
                 "reasoning": str(data.get("reasoning", ""))[:600],
                 "risks": [str(r)[:160] for r in risks[:3]],
                 "invalidation": str(data.get("invalidation", ""))[:240],
+                "model": model,
             }
         except (requests.RequestException, KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
-            logger.warning("AI attempt %s failed: %s", attempt + 1, e)
+            logger.warning("AI model %s failed: %s", model, e)
             AI_STATUS["error"] = type(e).__name__
+    if tried > 1:
+        AI_STATUS["error"] = f"{AI_STATUS['error'] or 'فشل'} بعد تجربة {tried} نماذج"
     return None
 
 
@@ -1202,7 +1247,7 @@ function render(d){
   h+=card('السياق والمشاعر',ctx);
   h+='</div>';
   if(d.ai){const a=d.ai;
-    h+='<div class="card" style="margin-bottom:16px"><h3>🤖 تحليل الذكاء الاصطناعي</h3><p>'+esc(a.reasoning)+'</p><p><b>الأخبار:</b> '+esc(a.news_summary)+'</p>'+(a.risks.length?'<p><b>المخاطر:</b></p><ul>'+a.risks.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>':'')+(a.invalidation?'<p><b>ما الذي يغيّر القرار:</b> '+esc(a.invalidation)+'</p>':'')+'</div>';}
+    h+='<div class="card" style="margin-bottom:16px"><h3>🤖 تحليل الذكاء الاصطناعي</h3><p>'+esc(a.reasoning)+'</p><p><b>الأخبار:</b> '+esc(a.news_summary)+'</p>'+(a.risks.length?'<p><b>المخاطر:</b></p><ul>'+a.risks.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>':'')+(a.invalidation?'<p><b>ما الذي يغيّر القرار:</b> '+esc(a.invalidation)+'</p>':'')+(a.model?'<p class="lbl">النموذج: '+esc(a.model)+'</p>':'')+'</div>';}
   h+='<div class="grid">'+card('📰 أخبار الأصل',newsList(d.news.asset))+card('🌍 أخبار كلية',newsList(d.news.macro))+'</div>';
   h+='<p class="lbl" style="text-align:center">⚠️ هذه ليست نصيحة مالية.</p>';
   $('out').innerHTML=h;
