@@ -93,7 +93,7 @@ def http_get(url, params=None, timeout=12):
     return None
 
 def is_crypto(symbol):
-    return symbol.endswith("-USD") or "=" not in symbol
+    return symbol.endswith("-USD") and "=" not in symbol
 
 def fmt_price(p):
     if p is None:
@@ -120,8 +120,8 @@ def get_news(symbol):
     key = f"news_{symbol}"
     cached = cache_get(key, 600)
     if cached is not None: return cached
-    clean_sym = symbol.split("-")[0] if "-" in symbol else symbol
-    asset = news_google(f"{clean_sym} crypto" if is_crypto(symbol) else f"{clean_sym} stock", 4)
+    clean_sym = symbol.split("-")[0].replace("=X", "").replace("=F", "") if ("-" in symbol or "=" in symbol) else symbol
+    asset = news_google(f"{clean_sym} crypto" if is_crypto(symbol) else f"{clean_sym} market OR stock", 4)
     macro = news_google("Federal Reserve OR inflation OR CPI", 4)
     result = {"asset": asset, "macro": macro}
     return cache_set(key, result)
@@ -162,7 +162,7 @@ def fetch_binance(symbol, interval):
 def fetch_yfinance(symbol, interval):
     if yf is None: return None
     try:
-        yf_sym = symbol if "-" in symbol or "=" in symbol else f"{symbol}-USD"
+        yf_sym = symbol
         period = {"15m": "1mo", "1h": "3mo", "4h": "3mo", "1d": "1y"}.get(interval, "3mo")
         raw = yf.Ticker(yf_sym).history(period=period, interval="1h" if interval == "4h" else interval)
         if raw is None or raw.empty: return None
@@ -368,7 +368,16 @@ def broadcast_alert(alert_data):
         _ws_clients.difference_update(dead_clients)
 
 def auto_market_scanner():
-    watchlist = [("BTC-USD", "1h"), ("ETH-USD", "1h"), ("SOL-USD", "1h"), ("XRP-USD", "1h"), ("GC=F", "1h")]
+    watchlist = [
+        ("BTC-USD", "1h"),
+        ("ETH-USD", "1h"),
+        ("SOL-USD", "1h"),
+        ("XRP-USD", "1h"),
+        ("BNB-USD", "1h"),
+        ("GC=F", "1h"),
+        ("EURUSD=X", "1h"),
+        ("NVDA", "1h"),
+    ]
     logger.info("Auto Market Scanner started in background...")
     time.sleep(10)
     
@@ -519,6 +528,15 @@ def dashboard_html():
   
   .loader{text-align:center;color:#58a6ff;padding:30px;font-size:16px;}
   .ws-status{font-size:11px;color:#3fb950;text-align:left;margin-bottom:10px;}
+
+  .ai-prose{font-size:13px;line-height:1.7;color:#c9d1d9;overflow-x:auto;}
+  .ai-prose h1,.ai-prose h2,.ai-prose h3{color:#58a6ff;margin:10px 0 6px;font-size:14px;}
+  .ai-prose p{margin:6px 0;}
+  .ai-prose ul{margin:6px 0;padding-right:18px;}
+  .ai-prose li{margin-bottom:4px;}
+  .ai-prose table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px;}
+  .ai-prose th,.ai-prose td{border:1px solid #30363d;padding:6px;text-align:right;}
+  .ai-prose th{background:#161b22;color:#e6edf3;}
 </style>
 </head>
 <body>
@@ -531,7 +549,10 @@ def dashboard_html():
       <option value="ETH-USD">ETH-USD</option>
       <option value="SOL-USD">SOL-USD</option>
       <option value="XRP-USD">XRP-USD</option>
+      <option value="BNB-USD">BNB-USD</option>
       <option value="GC=F">الذهب (GC=F)</option>
+      <option value="EURUSD=X">اليورو / دولار (EURUSD=X)</option>
+      <option value="NVDA">إنفيديا (NVDA)</option>
     </select>
     <select id="intervalSelect">
       <option value="15m">15m</option>
@@ -549,7 +570,7 @@ def dashboard_html():
     </div>
     <div id="autoAlertsList">
       <div style="font-size:12px;color:#8b949e;text-align:center;padding:8px;">
-        الرادار نشط يراقب (BTC, ETH, SOL, XRP, الذهب).. ستظهر التنبيهات هنا تلقائياً فور رصد سيولة أو إشارة قوية.
+        الرادار نشط يراقب الأصول المختارة.. ستظهر التنبيهات هنا تلقائياً فور رصد سيولة أو إشارة قوية.
       </div>
     </div>
   </div>
@@ -579,6 +600,73 @@ def dashboard_html():
     };
   }
   initWebSocket();
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderMarkdownLite(mdText) {
+    const lines = String(mdText || '').split(/\r?\n/);
+    let html = '';
+    let inList = false;
+    let inTable = false;
+
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+    const closeTable = () => { if (inTable) { html += '</tbody></table>'; inTable = false; } };
+    const inlineFmt = (s) => escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    for (let rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        closeList();
+        closeTable();
+        continue;
+      }
+
+      if (/^\|?[-:\s|]+\|?$/.test(line) && line.includes('|')) {
+        continue;
+      }
+
+      if (line.includes('|')) {
+        closeList();
+        const cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        if (!inTable) {
+          html += '<table><thead><tr>' + cells.map(c => `<th>${inlineFmt(c)}</th>`).join('') + '</tr></thead><tbody>';
+          inTable = true;
+        } else {
+          html += '<tr>' + cells.map(c => `<td>${inlineFmt(c)}</td>`).join('') + '</tr>';
+        }
+        continue;
+      } else {
+        closeTable();
+      }
+
+      if (/^###\s+/.test(line)) {
+        closeList();
+        html += `<h3>${inlineFmt(line.replace(/^###\s+/, ''))}</h3>`;
+      } else if (/^##\s+/.test(line)) {
+        closeList();
+        html += `<h2>${inlineFmt(line.replace(/^##\s+/, ''))}</h2>`;
+      } else if (/^#\s+/.test(line)) {
+        closeList();
+        html += `<h1>${inlineFmt(line.replace(/^#\s+/, ''))}</h1>`;
+      } else if (/^[-*•]\s+/.test(line)) {
+        closeTable();
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${inlineFmt(line.replace(/^[-*•]\s+/, ''))}</li>`;
+      } else {
+        closeList();
+        html += `<p>${inlineFmt(line)}</p>`;
+      }
+    }
+
+    closeList();
+    closeTable();
+    return html;
+  }
 
   function addAutoAlertToUI(alert) {
     const list = document.getElementById('autoAlertsList');
@@ -617,7 +705,7 @@ def dashboard_html():
     area.innerHTML = '<div class="loader">⏳ جاري تفكيك صفقات صناع السوق وقراءة الأخبار المباشرة...</div>';
     
     try {
-      let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}&include_ai=${withAi ? 'true' : 'false'}`);
+      let res = await fetch(`/api/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&include_ai=${withAi ? 'true' : 'false'}`);
       let data = await res.json();
       
       if(!data.success) {
@@ -667,7 +755,7 @@ def dashboard_html():
         </div>
       ` : '';
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق</div><div style="font-size:13px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;">${data.ai}</div></div>` : '';
+      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق</div><div class="ai-prose">${renderMarkdownLite(data.ai)}</div></div>` : '';
 
       let newsHtml = '';
       if(data.news && data.news.asset && data.news.asset.length > 0) {
