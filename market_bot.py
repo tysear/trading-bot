@@ -26,8 +26,9 @@ logger = logging.getLogger("quantbot")
 # ==========================================
 # الإعدادات
 # ==========================================
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
+DEFAULT_CLAUDE_MODEL = "anthropic/claude-3.5-sonnet"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = (os.environ.get("OPENROUTER_MODEL", DEFAULT_CLAUDE_MODEL) or DEFAULT_CLAUDE_MODEL).strip()
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 BINANCE_SPOT_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
@@ -280,12 +281,17 @@ def ask_ai(payload):
     if not OPENROUTER_API_KEY:
         return "الذكاء الاصطناعي غير متاحة؛ يرجى التحقق من إضافة المفتاح وعمل Redeploy."
     
+    model_name = (OPENROUTER_MODEL or DEFAULT_CLAUDE_MODEL).strip()
     body = {
-        "model": OPENROUTER_MODEL,
+        "model": model_name,
         "messages": [
             {
+                "role": "system",
+                "content": "أنت خبير تداول كمي وهندسة عكسية ومحلل أسواق مالية. اكتب تحليلاً منظماً، دقيقاً، ومختصراً باللغة العربية."
+            },
+            {
                 "role": "user",
-                "content": f"بصفتك خبير تداول كمي وهندسة عكسية، قدم تحليلاً مختصراً وواضحاً باللغة العربية بناءً على هذه البيانات: {json.dumps(payload, ensure_ascii=False)}"
+                "content": f"قدم تحليلاً مختصراً وواضحاً باللغة العربية بناءً على هذه البيانات: {json.dumps(payload, ensure_ascii=False)}"
             }
         ]
     }
@@ -298,17 +304,24 @@ def ask_ai(payload):
     }
     
     try:
-        res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=25)
+        res = requests.post(OPENROUTER_API_URL, json=body, headers=headers, timeout=30)
         if res.status_code == 200:
             data = res.json()
             if "choices" in data and len(data["choices"]) > 0:
-                return data["choices"][0]["message"]["content"].strip()
+                message = data["choices"][0].get("message", {})
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    content = "".join(
+                        part.get("text", "") for part in content if isinstance(part, dict)
+                    )
+                if str(content).strip():
+                    return str(content).strip()
             return "استجابة فارغة من النموذج."
         else:
-            logger.error(f"OpenRouter HTTP {res.status_code}: {res.text}")
+            logger.error("OpenRouter HTTP %s (model=%s): %s", res.status_code, model_name, res.text)
             return f"خطأ من مزود الذكاء الاصطناعي (رمز {res.status_code})."
     except Exception as e:
-        logger.error(f"AI Error: {e}")
+        logger.error("AI Error: %s", e)
         return "تعذر الاتصال بمحرك الذكاء الاصطناعي حالياً."
 
 def analyze(symbol, interval="4h", include_ai=True):
