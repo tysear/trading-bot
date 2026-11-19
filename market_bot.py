@@ -26,7 +26,7 @@ logger = logging.getLogger("quantbot")
 # ==========================================
 # الإعدادات
 # ==========================================
-DEFAULT_CLAUDE_MODEL = "anthropic/claude-3.5-sonnet"
+DEFAULT_CLAUDE_MODEL = "anthropic/claude-sonnet-5.5"
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_MODEL = (os.environ.get("OPENROUTER_MODEL", DEFAULT_CLAUDE_MODEL) or DEFAULT_CLAUDE_MODEL).strip()
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -420,7 +420,8 @@ def dashboard():
 def api_analyze():
     symbol = request.args.get("symbol", "BTC-USD")
     interval = request.args.get("interval", "4h")
-    res = analyze(symbol, interval, include_ai=True)
+    include_ai = request.args.get("include_ai", "true").lower() in ("1", "true", "yes")
+    res = analyze(symbol, interval, include_ai=include_ai)
     if not res:
         return jsonify({"success": False})
     
@@ -538,7 +539,7 @@ def dashboard_html():
       <option value="4h" selected>4h</option>
       <option value="1d">1d</option>
     </select>
-    <button class="analyze-btn" onclick="runAnalysis()">تحليل فوري</button>
+    <button class="analyze-btn" onclick="runAnalysis(true)">تحليل فوري</button>
   </div>
 
   <div class="auto-alerts-box">
@@ -594,7 +595,7 @@ def dashboard_html():
       </div>
       <div style="margin-top:4px;color:#c9d1d9;">السعر: <b>${alert.price}</b> | التقييم: <b>${alert.score}</b></div>
       <div style="margin-top:3px;color:#f0883e;font-size:12px;">${alert.smc_status}</div>
-      <button class="load-alert-btn" onclick="loadAlertAnalysis('${alert.symbol}', '${alert.interval}')">عرض التحليل الكامل والذكاء الاصطناعي ⬅️</button>
+      <button class="load-alert-btn" onclick="loadAlertAnalysis('${alert.symbol}', '${alert.interval}')">عرض بيانات التنبيه (بدون استهلاك رصيد AI) ⬅️</button>
     `;
     list.prepend(item);
     if (list.children.length > 5) {
@@ -605,10 +606,10 @@ def dashboard_html():
   function loadAlertAnalysis(sym, intv) {
     document.getElementById('symbolSelect').value = sym;
     document.getElementById('intervalSelect').value = intv;
-    runAnalysis();
+    runAnalysis(false);
   }
 
-  async function runAnalysis() {
+  async function runAnalysis(withAi = true) {
     const symbol = document.getElementById('symbolSelect').value;
     const interval = document.getElementById('intervalSelect').value;
     const area = document.getElementById('contentArea');
@@ -616,7 +617,7 @@ def dashboard_html():
     area.innerHTML = '<div class="loader">⏳ جاري تفكيك صفقات صناع السوق وقراءة الأخبار المباشرة...</div>';
     
     try {
-      let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}`);
+      let res = await fetch(`/api/analyze?symbol=${symbol}&interval=${interval}&include_ai=${withAi ? 'true' : 'false'}`);
       let data = await res.json();
       
       if(!data.success) {
@@ -717,7 +718,7 @@ def dashboard_html():
       area.innerHTML = '<div style="color:#da3633;text-align:center;padding:20px;">❌ حدث خطأ في الاتصال بالخادم.</div>';
     }
   }
-  window.onload = () => { runAnalysis(); };
+  window.onload = () => { runAnalysis(false); };
 </script>
 </body>
 </html>"""
