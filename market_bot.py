@@ -625,8 +625,10 @@ def dashboard_html():
   }
 
   function renderMarkdownLite(mdText) {
-    const normalized = String(mdText || '').split('\r\n').join('\n').split('\r').join('\n');
-    const lines = normalized.split('\n');
+    const cr = String.fromCharCode(13);
+    const lf = String.fromCharCode(10);
+    const normalized = String(mdText || '').split(cr + lf).join(lf).split(cr).join(lf);
+    const lines = normalized.split(lf);
     let html = '';
     let inList = false;
     let inTable = false;
