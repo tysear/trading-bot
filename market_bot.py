@@ -603,9 +603,9 @@ def dashboard_html():
 
   function escapeHtml(str) {
     return String(str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .split('&').join('&amp;')
+      .split('<').join('&lt;')
+      .split('>').join('&gt;');
   }
 
   function formatBoldText(raw) {
@@ -613,19 +613,20 @@ def dashboard_html():
     const parts = safe.split('**');
     let out = '';
     for (let i = 0; i < parts.length; i++) {
-      out += (i % 2 === 1) ? `<strong>${parts[i]}</strong>` : parts[i];
+      out += (i % 2 === 1) ? ('<strong>' + parts[i] + '</strong>') : parts[i];
     }
     return out;
   }
 
   function isSeparatorRow(line) {
-    if (!line.includes('|')) return false;
-    const cleaned = line.replace(/\|/g, '').replace(/-/g, '').replace(/:/g, '').trim();
+    if (line.indexOf('|') === -1) return false;
+    const cleaned = line.split('|').join('').split('-').join('').split(':').join('').trim();
     return cleaned.length === 0;
   }
 
   function renderMarkdownLite(mdText) {
-    const lines = String(mdText || '').split(/\r?\n/);
+    const normalized = String(mdText || '').split('\r\n').join('\n').split('\r').join('\n');
+    const lines = normalized.split('\n');
     let html = '';
     let inList = false;
     let inTable = false;
@@ -645,17 +646,17 @@ def dashboard_html():
         continue;
       }
 
-      if (line.includes('|')) {
+      if (line.indexOf('|') !== -1) {
         closeList();
         let rowStr = line;
         if (rowStr.startsWith('|')) rowStr = rowStr.slice(1);
         if (rowStr.endsWith('|')) rowStr = rowStr.slice(0, -1);
         const cells = rowStr.split('|').map(c => c.trim());
         if (!inTable) {
-          html += '<table><thead><tr>' + cells.map(c => `<th>${formatBoldText(c)}</th>`).join('') + '</tr></thead><tbody>';
+          html += '<table><thead><tr>' + cells.map(c => ('<th>' + formatBoldText(c) + '</th>')).join('') + '</tr></thead><tbody>';
           inTable = true;
         } else {
-          html += '<tr>' + cells.map(c => `<td>${formatBoldText(c)}</td>`).join('') + '</tr>';
+          html += '<tr>' + cells.map(c => ('<td>' + formatBoldText(c) + '</td>')).join('') + '</tr>';
         }
         continue;
       } else {
@@ -664,20 +665,20 @@ def dashboard_html():
 
       if (line.startsWith('### ')) {
         closeList();
-        html += `<h3>${formatBoldText(line.slice(4))}</h3>`;
+        html += '<h3>' + formatBoldText(line.slice(4)) + '</h3>';
       } else if (line.startsWith('## ')) {
         closeList();
-        html += `<h2>${formatBoldText(line.slice(3))}</h2>`;
+        html += '<h2>' + formatBoldText(line.slice(3)) + '</h2>';
       } else if (line.startsWith('# ')) {
         closeList();
-        html += `<h1>${formatBoldText(line.slice(2))}</h1>`;
+        html += '<h1>' + formatBoldText(line.slice(2)) + '</h1>';
       } else if (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('• ')) {
         closeTable();
         if (!inList) { html += '<ul>'; inList = true; }
-        html += `<li>${formatBoldText(line.slice(2))}</li>`;
+        html += '<li>' + formatBoldText(line.slice(2)) + '</li>';
       } else {
         closeList();
-        html += `<p>${formatBoldText(line)}</p>`;
+        html += '<p>' + formatBoldText(line) + '</p>';
       }
     }
 
@@ -693,7 +694,7 @@ def dashboard_html():
     }
     const cls = alert.action.includes('شراء') ? 'buy-alert' : alert.action.includes('بيع') ? 'sell-alert' : '';
     const item = document.createElement('div');
-    item.className = `auto-alert-item ${cls}`;
+    item.className = 'auto-alert-item ' + cls;
     item.innerHTML = `
       <div style="display:flex;justify-content:space-between;font-weight:bold;">
         <span>🔔 ${alert.symbol} (${alert.interval}) — ${alert.action}</span>
@@ -723,7 +724,7 @@ def dashboard_html():
     area.innerHTML = '<div class="loader">⏳ جاري تفكيك صفقات صناع السوق وقراءة الأخبار المباشرة...</div>';
     
     try {
-      let res = await fetch(`/api/analyze?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&include_ai=${withAi ? 'true' : 'false'}`);
+      let res = await fetch('/api/analyze?symbol=' + encodeURIComponent(symbol) + '&interval=' + encodeURIComponent(interval) + '&include_ai=' + (withAi ? 'true' : 'false'));
       let data = await res.json();
       
       if(!data.success) {
@@ -773,7 +774,7 @@ def dashboard_html():
         </div>
       ` : '';
 
-      let aiHtml = data.ai ? `<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق</div><div class="ai-prose">${renderMarkdownLite(data.ai)}</div></div>` : '';
+      let aiHtml = data.ai ? ('<div class="card"><div class="card-title">تحليل الذكاء الاصطناعي وهندسة السوق</div><div class="ai-prose">' + renderMarkdownLite(data.ai) + '</div></div>') : '';
 
       let newsHtml = '';
       if(data.news && data.news.asset && data.news.asset.length > 0) {
