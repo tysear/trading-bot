@@ -608,6 +608,22 @@ def dashboard_html():
       .replace(/>/g, '&gt;');
   }
 
+  function formatBoldText(raw) {
+    const safe = escapeHtml(raw);
+    const parts = safe.split('**');
+    let out = '';
+    for (let i = 0; i < parts.length; i++) {
+      out += (i % 2 === 1) ? `<strong>${parts[i]}</strong>` : parts[i];
+    }
+    return out;
+  }
+
+  function isSeparatorRow(line) {
+    if (!line.includes('|')) return false;
+    const cleaned = line.replace(/\|/g, '').replace(/-/g, '').replace(/:/g, '').trim();
+    return cleaned.length === 0;
+  }
+
   function renderMarkdownLite(mdText) {
     const lines = String(mdText || '').split(/\r?\n/);
     let html = '';
@@ -616,50 +632,52 @@ def dashboard_html():
 
     const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
     const closeTable = () => { if (inTable) { html += '</tbody></table>'; inTable = false; } };
-    const inlineFmt = (s) => escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-    for (let rawLine of lines) {
-      const line = rawLine.trim();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
       if (!line) {
         closeList();
         closeTable();
         continue;
       }
 
-      if (/^\|?[-:\s|]+\|?$/.test(line) && line.includes('|')) {
+      if (isSeparatorRow(line)) {
         continue;
       }
 
       if (line.includes('|')) {
         closeList();
-        const cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        let rowStr = line;
+        if (rowStr.startsWith('|')) rowStr = rowStr.slice(1);
+        if (rowStr.endsWith('|')) rowStr = rowStr.slice(0, -1);
+        const cells = rowStr.split('|').map(c => c.trim());
         if (!inTable) {
-          html += '<table><thead><tr>' + cells.map(c => `<th>${inlineFmt(c)}</th>`).join('') + '</tr></thead><tbody>';
+          html += '<table><thead><tr>' + cells.map(c => `<th>${formatBoldText(c)}</th>`).join('') + '</tr></thead><tbody>';
           inTable = true;
         } else {
-          html += '<tr>' + cells.map(c => `<td>${inlineFmt(c)}</td>`).join('') + '</tr>';
+          html += '<tr>' + cells.map(c => `<td>${formatBoldText(c)}</td>`).join('') + '</tr>';
         }
         continue;
       } else {
         closeTable();
       }
 
-      if (/^###\s+/.test(line)) {
+      if (line.startsWith('### ')) {
         closeList();
-        html += `<h3>${inlineFmt(line.replace(/^###\s+/, ''))}</h3>`;
-      } else if (/^##\s+/.test(line)) {
+        html += `<h3>${formatBoldText(line.slice(4))}</h3>`;
+      } else if (line.startsWith('## ')) {
         closeList();
-        html += `<h2>${inlineFmt(line.replace(/^##\s+/, ''))}</h2>`;
-      } else if (/^#\s+/.test(line)) {
+        html += `<h2>${formatBoldText(line.slice(3))}</h2>`;
+      } else if (line.startsWith('# ')) {
         closeList();
-        html += `<h1>${inlineFmt(line.replace(/^#\s+/, ''))}</h1>`;
-      } else if (/^[-*•]\s+/.test(line)) {
+        html += `<h1>${formatBoldText(line.slice(2))}</h1>`;
+      } else if (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('• ')) {
         closeTable();
         if (!inList) { html += '<ul>'; inList = true; }
-        html += `<li>${inlineFmt(line.replace(/^[-*•]\s+/, ''))}</li>`;
+        html += `<li>${formatBoldText(line.slice(2))}</li>`;
       } else {
         closeList();
-        html += `<p>${inlineFmt(line)}</p>`;
+        html += `<p>${formatBoldText(line)}</p>`;
       }
     }
 
