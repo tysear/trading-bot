@@ -1,8 +1,8 @@
-scipy
+
 numpy
 pandas
 requests
 flask
 flask-sock
 yfinance
-python-telegram-bot
+waitress
