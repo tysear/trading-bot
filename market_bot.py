@@ -943,6 +943,10 @@ def unverified_numbers(text, payload):
             continue
         if "," not in raw and "." not in raw and 2020 <= v <= 2035:
             continue  # سنة
+        before = text[max(0, m.start() - 6):m.start()]
+        after = text[m.end():m.end() + 6]
+        if re.match(r"\s*(%|ATR|atr)", after) or re.search(r"ATR\s*[=:]?\s*$", before, re.I):
+            continue  # نسبة مئوية أو مضاعف ATR وليس مستوى سعري
         if not 0.6 * price <= v <= 1.4 * price:
             continue
         if any(abs(v - x) <= abs(x) * 0.003 for x in nums):
@@ -1842,9 +1846,9 @@ function smcCard(s){
   const ss=s.sweep_stats;
   if(ss){
     const items=[];
-    [['bull','بعد كنس القيعان: ارتد +1 ATR أولاً'],['bear','بعد كنس القمم: هبط -1 ATR أولاً']].forEach(p=>{
+    [['bull','بعد كنس القيعان: ارتد السعر أولاً بمقدار '+ltr('+1 ATR')+' (نجح/الكل)'],['bear','بعد كنس القمم: هبط السعر أولاً بمقدار '+ltr('-1 ATR')+' (نجح/الكل)']].forEach(p=>{
       const q=ss[p[0]];
-      if(q&&q.n)items.push(esc(p[1])+': '+ltr(q.success+' من '+q.n)+(q.n<10?' <span class="lbl">(عينة صغيرة)</span>':''));
+      if(q&&q.n)items.push(p[1]+': '+ltr(q.success+'/'+q.n)+(q.n<10?' <span class="lbl">(عينة صغيرة)</span>':''));
     });
     if(items.length)h+=lines('إحصاء تاريخي على آخر 300 شمعة',items);
   }
