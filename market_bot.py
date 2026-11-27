@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v4.0 (web)
+Quant Trading Bot v4.1 (web)
 ============================
 تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي، مع رادار تنبيهات حي ومتابعة نتائج الإشارات.
 
@@ -92,6 +92,8 @@ NOISE_RE = re.compile(
     r"predicts|unbelievable|\$\d+(\.\d+)? million|\d+ times|investing move|wash-sale|"
     r"should (americans|you|investors)|i.m making|i.d buy|"
     r"crypto(currency)? (atms?|machines|kiosks?)|bitcoin atms?|"
+    r"mcglone|\bgala\b|meme ?coins?|everything bubble|price (target|forecast)|"
+    r"sees (bitcoin|btc|ether|eth|xrp|solana)\b.{0,25}\bat \$|"
     r"best (crypto|altcoin)|top \d+ |\b\d+x\b|could (soar|explode|skyrocket)|sponsored|"
     r"\bby 20(2[7-9]|[3-9]\d)\b|\bfor 20(2[7-9]|[3-9]\d)\b",
     re.IGNORECASE,
@@ -628,6 +630,10 @@ def _order_blocks(o, h, l, c, events, price, atr, atr_at, lookback=120):
     return out[:3]
 
 
+def _ago_txt(k):
+    return "الشمعة الحالية (لم تُغلق بعد)" if k <= 0 else f"قبل {k} شمعة"
+
+
 def smc_analysis(df, atr):
     try:
         if df is None or len(df) < 60 or not atr or atr <= 0:
@@ -663,11 +669,11 @@ def smc_analysis(df, atr):
         notes = []
         if last:
             notes.append(f"آخر حدث هيكلي: {last['type']} {'صاعد' if last['dir'] > 0 else 'هابط'} عند "
-                         f"{fmt_price(last['level'])} قبل {last['bars_ago']} شمعة، والطابع الحالي {trend_label}.")
+                         f"{fmt_price(last['level'])} {_ago_txt(last['bars_ago'])}، والطابع الحالي {trend_label}.")
         if recent:
             s = recent[0]
-            notes.append(f"كُنس {'قاع' if s['dir'] > 0 else 'قمة'} عند {fmt_price(s['level'])} قبل {s['bars_ago']} "
-                         f"شمعة وأُغلقت الشمعة {'فوقه' if s['dir'] > 0 else 'تحتها'} (ملاحظة هيكلية، وليست دليلاً على تلاعب).")
+            notes.append(f"كُنس {'قاع' if s['dir'] > 0 else 'قمة'} عند {fmt_price(s['level'])} ({_ago_txt(s['bars_ago'])}) "
+                         f"وأُغلقت الشمعة {'فوقه' if s['dir'] > 0 else 'تحتها'} (ملاحظة هيكلية، وليست دليلاً على تلاعب).")
         for label, zs in (("أعلى", above), ("أسفل", below)):
             if zs:
                 z = zs[0]
@@ -866,6 +872,8 @@ SYSTEM_PROMPT = (
     "1 ATR above support, or buying within 1 ATR below resistance; choose 'انتظار' and say which "
     "break or retest would confirm the move. Direction logic: a break BELOW support confirms a sell; "
     "a break ABOVE resistance confirms a buy. Never state the opposite.\n"
+    "5b. Quote price levels only from the data (support/resistance, liquidity, FVG, order blocks, EMAs, "
+    "or price +/- multiples of ATR). If you give a rounded target that is not in the data, say it is an estimate.\n"
     "6. Prioritize impactful news (ETF flows, central banks, regulation, hacks, exchange issues) "
     "over generic articles.\n"
     "7. If the action is 'انتظار', the reasoning must explain why.\n"
@@ -899,6 +907,49 @@ def _parse_ai_json(text):
         return json.loads(text[start:end + 1], strict=False)
     except ValueError:
         return None
+
+
+_NUM_RE = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?<![\w.])\d+\.\d+|(?<![\w.])\d{3,}")
+
+
+def unverified_numbers(text, payload):
+    # أرقام بمستوى السعر وردت في تقرير النموذج ولا تطابق أي رقم في بيانات التحليل (ولا السعر ± مضاعفات ATR)
+    tech = payload.get("technical") or {}
+    price, atr = tech.get("price"), tech.get("atr")
+    if not price:
+        return []
+    nums = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+        elif isinstance(o, (int, float)) and not isinstance(o, bool) and np.isfinite(o):
+            nums.append(float(o))
+
+    walk({k: v for k, v in payload.items() if k not in ("asset_news", "macro_news")})
+    if atr:
+        for k in np.arange(0.5, 4.51, 0.5):
+            nums += [price + k * atr, price - k * atr]
+    out = []
+    for m in _NUM_RE.finditer(text or ""):
+        raw = m.group(0)
+        try:
+            v = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        if "," not in raw and "." not in raw and 2020 <= v <= 2035:
+            continue  # سنة
+        if not 0.6 * price <= v <= 1.4 * price:
+            continue
+        if any(abs(v - x) <= abs(x) * 0.003 for x in nums):
+            continue
+        if raw not in out:
+            out.append(raw)
+    return out[:6]
 
 
 OPENROUTER_AUTO = os.environ.get("OPENROUTER_AUTO", "1").strip() != "0"
@@ -1006,6 +1057,8 @@ def ask_ai(payload):
                 "risks": [str(r)[:160] for r in risks[:3]],
                 "invalidation": str(data.get("invalidation", ""))[:240],
                 "report": str(data.get("report", ""))[:6000],
+                "unverified": unverified_numbers(
+                    " ".join(str(data.get(k, "")) for k in ("report", "reasoning", "invalidation", "news_summary")), payload),
                 "model": model,
             }
         except (requests.RequestException, KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
@@ -1436,11 +1489,23 @@ _ws_clients = set()
 _ws_lock = threading.Lock()
 
 
+ALERT_HINTS = {
+    "sweep_low": "اختُرق قاع سابق بذيل الشمعة ثم أُغلقت فوقه. يُقرأ كقوة محتملة، وليس إشارة شراء بمفرده.",
+    "sweep_high": "اختُرقت قمة سابقة بذيل الشمعة ثم أُغلقت تحتها. يُقرأ كضعف محتمل، وليس إشارة بيع بمفرده.",
+    "choch_bull": "كُسرت آخر قمة هيكلية بعد اتجاه هابط. قد تكون بداية تحول صاعد وتحتاج تأكيداً.",
+    "choch_bear": "كُسر آخر قاع هيكلي بعد اتجاه صاعد. قد تكون بداية تحول هابط وتحتاج تأكيداً.",
+    "ob_bull": "السعر عاد إلى آخر شمعة هابطة سبقت اندفاعاً صاعداً. منطقة قد يتفاعل عندها السعر.",
+    "ob_bear": "السعر عاد إلى آخر شمعة صاعدة سبقت اندفاعاً هابطاً. منطقة قد يتفاعل عندها السعر.",
+    "quant_buy": "الاتجاه والزخم يميلان للشراء بقوة، لكن هذه الدرجة لا تراعي الأخبار. افتح التحليل قبل أي قرار.",
+    "quant_sell": "الاتجاه والزخم يميلان للبيع بقوة، لكن هذه الدرجة لا تراعي الأخبار. افتح التحليل قبل أي قرار.",
+}
+
+
 def _alert_dict(r):
     return {"id": r["id"], "ts": r["created_at"],
             "time": datetime.fromtimestamp(r["created_at"], timezone.utc).strftime("%m-%d %H:%M UTC"),
             "symbol": r["symbol"], "interval": r["interval"], "kind": r["kind"], "dir": r["direction"],
-            "action": r["action"], "price": r["price"], "text": r["text"]}
+            "action": r["action"], "price": r["price"], "text": r["text"], "hint": ALERT_HINTS.get(r["kind"], "")}
 
 
 def save_alert(symbol, interval, kind, dir_, price, action, text):
@@ -1480,9 +1545,9 @@ def build_alerts(res):
     for s in (smc.get("recent_sweeps") or [])[:1]:
         if s["bars_ago"] <= 2:
             if s["dir"] > 0:
-                out.append(("sweep_low", 1, f"كُنس قاع عند {fmt_price(s['level'])} وأُغلقت الشمعة فوقه (قبل {s['bars_ago']} شمعة)"))
+                out.append(("sweep_low", 1, f"كُنس قاع عند {fmt_price(s['level'])} وأُغلقت الشمعة فوقه ({_ago_txt(s['bars_ago'])})"))
             else:
-                out.append(("sweep_high", -1, f"كُنست قمة عند {fmt_price(s['level'])} وأُغلقت الشمعة تحتها (قبل {s['bars_ago']} شمعة)"))
+                out.append(("sweep_high", -1, f"كُنست قمة عند {fmt_price(s['level'])} وأُغلقت الشمعة تحتها ({_ago_txt(s['bars_ago'])})"))
     st = smc.get("last_structure")
     if st and st["type"] == "CHoCH" and st["bars_ago"] <= 3:
         out.append((f"choch_{'bull' if st['dir'] > 0 else 'bear'}", st["dir"],
@@ -1610,6 +1675,11 @@ ul{padding-right:18px}li{margin:4px 0}p{line-height:1.7}
 .ai-prose th,.ai-prose td{border:1px solid #30363d;padding:6px;text-align:right}
 .ai-prose th{background:rgba(255,255,255,.07)}
 .ws{font-size:.8em;color:#8b949e}
+  .hint{color:#8b949e;font-size:.85em;margin:4px 0}
+  .srow{padding:7px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+  .zl{list-style:none;padding:0;margin:4px 0 2px}
+  .zl li{padding:3px 0;border-bottom:1px dashed rgba(255,255,255,.06);font-size:.95em}
+  details summary{cursor:pointer;margin-top:8px}
 </style></head><body><div class="wrap">
 <h1>Quant Trading Bot</h1>
 <div class="sub">تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي <span class="ws" id="wsStatus"></span></div>
@@ -1707,7 +1777,7 @@ function addAlert(a){
 function renderAlerts(){
   const el=$('alerts');
   if(!alerts.length){el.innerHTML='<p class="lbl">الرادار يراقب الأصول المحددة كل 5 دقائق. لا توجد تنبيهات بعد.</p>';return;}
-  el.innerHTML=alerts.map(a=>'<div class="alert '+(a.dir>0?'up':a.dir<0?'down':'')+'"><div class="ah"><b>'+esc(a.symbol)+' ('+esc(a.interval)+')</b><span class="lbl">'+esc(a.time)+'</span></div><div>'+esc(a.text)+'</div><div class="lbl">السعر: <span class="ltr">'+fmt(a.price)+'</span></div><button class="mini alt" data-sym="'+esc(a.symbol)+'" data-tf="'+esc(a.interval)+'">عرض التحليل (بدون AI)</button></div>').join('');
+  el.innerHTML=alerts.map(a=>'<div class="alert '+(a.dir>0?'up':a.dir<0?'down':'')+'"><div class="ah"><b>'+esc(a.symbol)+' ('+esc(a.interval)+')</b><span class="lbl">'+esc(a.time)+'</span></div><div>'+esc(a.text)+'</div>'+(a.hint?'<div class="hint">💡 '+esc(a.hint)+'</div>':'')+'<div class="lbl">السعر: <span class="ltr">'+fmt(a.price)+'</span></div><button class="mini alt" data-sym="'+esc(a.symbol)+'" data-tf="'+esc(a.interval)+'">عرض التحليل (بدون AI)</button></div>').join('');
 }
 function setSymbol(sym){
   const sel=$('symbol');
@@ -1750,27 +1820,35 @@ async function run(useAi){
   }catch(e){st.className='msg err';st.textContent='حدث خطأ في الاتصال';}
   finally{b1.disabled=false;b2.disabled=false;}
 }
-function listZ(a,withEq){
-  return (a||[]).slice(0,2).map(x=>fmt(x.level)+(withEq&&x.equal?' (متساوية)':'')+' • '+n(x.dist_atr,1)+' ATR').join('  |  ')||'-';
+const ago=k=>k<=0?'الشمعة الحالية (لم تُغلق بعد)':'قبل '+k+' شمعة';
+const ltr=t=>'<span class="ltr">'+esc(t)+'</span>';
+function lines(label,items){
+  if(!items||!items.length)return row(label,'لا يوجد');
+  return '<div class="srow"><span class="lbl">'+esc(label)+'</span><ul class="zl">'+items.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>';
 }
 function smcCard(s){
   if(!s)return card('🔍 الهندسة العكسية (Smart Money)','<p class="lbl">غير متاحة (بيانات غير كافية).</p>');
   const dt=v=>v>0?'صاعد':v<0?'هابط':'غير محدد';
   let h=row('طابع الهيكل الحالي',dt(s.trend));
-  if(s.last_structure){const e=s.last_structure;h+=row('آخر حدث هيكلي',e.type+' '+dt(e.dir)+' @ '+fmt(e.level)+' • قبل '+e.bars_ago+' شمعة');}
+  if(s.last_structure){const e=s.last_structure;h+=lines('آخر حدث هيكلي',[esc(e.type+' '+dt(e.dir))+' '+ltr('@ '+fmt(e.level))+' • '+esc(ago(e.bars_ago))]);}
   if(s.zone)h+=row('منطقة السعر',s.zone.label+' ('+n(s.zone.pct,0)+'%)');
-  h+=row('سيولة غير مكنوسة أعلى',listZ(s.liquidity_above,true));
-  h+=row('سيولة غير مكنوسة أسفل',listZ(s.liquidity_below,true));
-  if(s.recent_sweeps&&s.recent_sweeps.length)h+=row('آخر كنس سيولة',s.recent_sweeps.map(x=>(x.dir>0?'قاع':'قمة')+' @ '+fmt(x.level)+' • قبل '+x.bars_ago+' شمعة').join('  |  '));
-  if(s.fvg&&s.fvg.length)h+=row('فجوات القيمة العادلة',s.fvg.slice(0,2).map(x=>(x.dir>0?'صاعدة ':'هابطة ')+fmt(x.low)+'–'+fmt(x.high)+' • '+n(x.dist_atr,1)+' ATR').join('  |  '));
-  if(s.order_blocks&&s.order_blocks.length)h+=row('كتل الأوامر (غير مستهلكة)',s.order_blocks.slice(0,2).map(x=>(x.dir>0?'صاعدة ':'هابطة ')+fmt(x.low)+'–'+fmt(x.high)+' • '+n(x.dist_atr,1)+' ATR').join('  |  '));
+  const liq=a=>(a||[]).slice(0,3).map(x=>ltr(fmt(x.level)+' • '+n(x.dist_atr,1)+' ATR')+(x.equal?' <span class="lbl">(قمم/قيعان متساوية)</span>':''));
+  h+=lines('سيولة غير مكنوسة أعلى السعر',liq(s.liquidity_above));
+  h+=lines('سيولة غير مكنوسة أسفل السعر',liq(s.liquidity_below));
+  h+=lines('آخر كنس سيولة',(s.recent_sweeps||[]).slice(0,2).map(x=>esc(x.dir>0?'كنس قاع':'كنس قمة')+' '+ltr('@ '+fmt(x.level))+' • '+esc(ago(x.bars_ago))));
+  const zn=a=>(a||[]).slice(0,3).map(x=>esc(x.dir>0?'صاعدة':'هابطة')+' '+ltr(fmt(x.low)+' – '+fmt(x.high)+' • '+n(x.dist_atr,1)+' ATR'));
+  h+=lines('فجوات القيمة العادلة (غير مغلقة)',zn(s.fvg));
+  h+=lines('كتل الأوامر (غير مستهلكة)',zn(s.order_blocks));
   const ss=s.sweep_stats;
   if(ss){
-    [['bull','كنس القيعان تاريخياً (ارتد +1 ATR أولاً)'],['bear','كنس القمم تاريخياً (هبط -1 ATR أولاً)']].forEach(p=>{
-      const q=ss[p[0]];if(q&&q.n)h+=row(p[1],q.success+' من '+q.n+(q.n<10?' (عينة صغيرة)':''));
+    const items=[];
+    [['bull','بعد كنس القيعان: ارتد +1 ATR أولاً'],['bear','بعد كنس القمم: هبط -1 ATR أولاً']].forEach(p=>{
+      const q=ss[p[0]];
+      if(q&&q.n)items.push(esc(p[1])+': '+ltr(q.success+' من '+q.n)+(q.n<10?' <span class="lbl">(عينة صغيرة)</span>':''));
     });
+    if(items.length)h+=lines('إحصاء تاريخي على آخر 300 شمعة',items);
   }
-  if(s.notes&&s.notes.length)h+='<ul>'+s.notes.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>';
+  if(s.notes&&s.notes.length)h+='<details><summary class="lbl">ملخص نصي</summary><ul>'+s.notes.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul></details>';
   h+='<p class="lbl">ملاحظات هيكلية تُحسب من الشموع، وليست دليلاً على تلاعب أو نوايا مشاركين محددين.</p>';
   return card('🔍 الهندسة العكسية (Smart Money)',h);
 }
@@ -1794,6 +1872,7 @@ function render(d){
     let body='';
     if(a.report){body='<div class="ai-prose">'+md(a.report)+'</div>';}
     else{body='<p>'+esc(a.reasoning)+'</p><p><b>الأخبار:</b> '+esc(a.news_summary)+'</p>'+(a.risks.length?'<p><b>المخاطر:</b></p><ul>'+a.risks.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>':'');}
+    if(a.unverified&&a.unverified.length)body+='<div class="note">⚠️ أرقام وردت في التقرير ولا تطابق مستوى في بيانات التحليل (قد تكون تقديراً من النموذج): <span class="ltr">'+a.unverified.map(esc).join(' ، ')+'</span></div>';
     body+=(a.invalidation?'<p><b>ما الذي يغيّر القرار:</b> '+esc(a.invalidation)+'</p>':'')+(a.model?'<p class="lbl">النموذج: '+esc(a.model)+'</p>':'');
     h+='<div class="card" style="margin-bottom:14px"><h3>🤖 تحليل الذكاء الاصطناعي</h3>'+body+'</div>';}
   h+='<div class="grid">'+card('📰 أخبار الأصل',newsList(d.news.asset))+card('🌍 أخبار كلية',newsList(d.news.macro))+'</div>';
