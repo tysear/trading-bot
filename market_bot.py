@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v4.1 (web)
+Quant Trading Bot v4.3 (web)
 ============================
 تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي، مع رادار تنبيهات حي ومتابعة نتائج الإشارات.
 
@@ -12,6 +12,9 @@ Quant Trading Bot v4.1 (web)
                       واجعله مثلاً /data/signals.db وإلا تُمسح السجلات والتنبيهات مع كل نشر
   WATCHLIST           أصول الرادار مثل BTC-USD:1h,ETH-USD:1h,GC=F:1h (الافتراضي 8 أصول)
   ALERT_COOLDOWN_H    ساعات منع تكرار نفس التنبيه (الافتراضي 6)
+  CALENDAR_ALERTS     0 لإيقاف تنبيهات الأحداث الاقتصادية الأمريكية (NFP/CPI/الفائدة...) (الافتراضي مفعّل)
+  CALENDAR_LEAD_MIN   كم دقيقة قبل الحدث يصل التنبيه (الافتراضي 60)
+  CALENDAR_URLS       اختياري: روابط JSON لتقويم الأحداث (الافتراضي تقويم أسبوعي مجاني)
   NTFY_TOPIC          اختياري: إشعارات على الجوال عبر ntfy.sh (اختر اسماً طويلاً يصعب تخمينه)
   AUTO_SCAN           اختياري: فحص تلقائي بالذكاء الاصطناعي لتسجيل إشارات، مثل XRP-USD:4h,BTC-USD:4h
   AUTO_SCAN_HOURS     كل كم ساعة يتم AUTO_SCAN (الافتراضي 4)
@@ -29,7 +32,8 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from contextlib import closing
-from datetime import datetime, timezone
+import zlib
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
@@ -877,6 +881,8 @@ SYSTEM_PROMPT = (
     "6. Prioritize impactful news (ETF flows, central banks, regulation, hacks, exchange issues) "
     "over generic articles.\n"
     "7. If the action is 'انتظار', the reasoning must explain why.\n"
+    "7b. If 'upcoming_us_events' lists a high-impact US release within the next hours, mention it as a risk "
+    "and prefer waiting for the release before a new position. Do not predict the number.\n"
     "8. The 'smc' items are structural observations, NOT proof of manipulation or stop hunting. Describe them as "
     "possibilities, always mention the sample size (n) when quoting sweep statistics, and never state the "
     "intent of 'market makers' or whales as a fact.\n"
@@ -1120,6 +1126,9 @@ def analyze(symbol, interval="4h", source=None, use_ai=True, use_news=True):
             "smc": _compact_smc(smc),
             "derivatives": deriv,
             "fear_greed_index": fng,
+            "upcoming_us_events": [{"title": e["title"], "in_minutes": round((e["ts"] - time.time()) / 60),
+                                    "forecast": e["forecast"], "previous": e["previous"]}
+                                   for e in upcoming_events(24)] if use_news else [],
             "asset_news": [{"title": n["title"], "source": n["source"], "age_hours": n["age_h"]}
                            for n in news["asset"]],
             "macro_news": [{"title": n["title"], "source": n["source"], "age_hours": n["age_h"]}
@@ -1493,7 +1502,201 @@ _ws_clients = set()
 _ws_lock = threading.Lock()
 
 
+# ==========================================
+# تقويم الأحداث الاقتصادية الأمريكية (NFP, CPI, الفائدة ...)
+# ==========================================
+CALENDAR_ENABLED = os.environ.get("CALENDAR_ALERTS", "1").strip() != "0"
+CALENDAR_URLS = [u.strip() for u in os.environ.get(
+    "CALENDAR_URLS",
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json,https://nfs.faireconomy.media/ff_calendar_nextweek.json"
+).split(",") if u.strip()]
+CAL_CURRENCIES = {c.strip().upper() for c in os.environ.get("CALENDAR_CURRENCIES", "USD").split(",") if c.strip()}
+CAL_IMPACTS = {c.strip().lower() for c in os.environ.get("CALENDAR_IMPACT", "High").split(",") if c.strip()}
+try:
+    CAL_LEAD_MIN = max(5, int(os.environ.get("CALENDAR_LEAD_MIN", "60")))
+except ValueError:
+    CAL_LEAD_MIN = 60
+try:
+    from zoneinfo import ZoneInfo
+    CAL_TZ = ZoneInfo(os.environ.get("CALENDAR_TZ", "Asia/Amman"))
+except Exception:
+    CAL_TZ = timezone(timedelta(hours=3))
+
+ECON_AR = [
+    (r"non-?farm|\bnfp\b", "الوظائف غير الزراعية (NFP)"),
+    (r"unemployment rate", "معدل البطالة"),
+    (r"average hourly earnings", "متوسط الأجور بالساعة"),
+    (r"unemployment claims|jobless claims", "طلبات إعانة البطالة"),
+    (r"core cpi", "مؤشر أسعار المستهلك الأساسي (Core CPI)"),
+    (r"\bcpi\b", "مؤشر أسعار المستهلك (CPI)"),
+    (r"core ppi", "مؤشر أسعار المنتجين الأساسي (Core PPI)"),
+    (r"\bppi\b", "مؤشر أسعار المنتجين (PPI)"),
+    (r"core pce", "مؤشر PCE الأساسي"),
+    (r"fomc.*minutes|meeting minutes", "محضر اجتماع الفيدرالي"),
+    (r"fomc press conference", "مؤتمر الفيدرالي الصحفي"),
+    (r"federal funds rate|fomc statement|interest rate", "قرار الفائدة الأمريكية"),
+    (r"powell|fed chair", "كلمة رئيس الفيدرالي"),
+    (r"gdp", "الناتج المحلي الإجمالي (GDP)"),
+    (r"retail sales", "مبيعات التجزئة"),
+    (r"\badp\b", "وظائف ADP"),
+    (r"jolts", "فرص العمل (JOLTS)"),
+    (r"ism .*pmi|ism ", "مؤشر ISM"),
+    (r"michigan|consumer sentiment", "ثقة المستهلك (ميشيغان)"),
+]
+_cal = {"events": [], "fetched": 0.0, "attempt": 0.0, "ok": False}
+_cal_lock = threading.Lock()
+
+
+def econ_title_ar(title):
+    for pat, ar in ECON_AR:
+        if re.search(pat, title, re.I):
+            return ar
+    return title
+
+
+def _parse_cal_item(it):
+    if not isinstance(it, dict):
+        return None
+    if str(it.get("country", "")).upper() not in CAL_CURRENCIES:
+        return None
+    if str(it.get("impact", "")).strip().lower() not in CAL_IMPACTS:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(it["date"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    title = str(it.get("title", "")).strip()[:120]
+    if not title:
+        return None
+    clean_val = lambda k: str(it.get(k) or "").strip()[:20]
+    return {"ts": dt.timestamp(), "country": str(it.get("country", "")).upper(), "title": title,
+            "title_ar": econ_title_ar(title), "forecast": clean_val("forecast"),
+            "previous": clean_val("previous"), "actual": clean_val("actual")}
+
+
+def fetch_calendar():
+    events, ok = [], False
+    for url in CALENDAR_URLS:
+        r = http_get(url, timeout=15)
+        if r is None:
+            continue
+        try:
+            data = r.json()
+        except ValueError:
+            continue
+        if isinstance(data, list):
+            ok = True
+            events += [e for e in (_parse_cal_item(i) for i in data) if e]
+    return sorted(events, key=lambda e: e["ts"]) if ok else None
+
+
+def refresh_calendar(force=False):
+    now = time.time()
+    with _cal_lock:
+        age, since_try = now - _cal["fetched"], now - _cal["attempt"]
+        # قرب الصدور نحدّث أسرع لالتقاط الرقم الفعلي إن وفّره المصدر
+        near = any(-3600 <= e["ts"] - now <= 300 and not e["actual"] for e in _cal["events"])
+        need = force or age > 3600 or (near and age > 180)
+        if not need or since_try < (150 if _cal["ok"] else 600):
+            return
+        _cal["attempt"] = now
+    events = fetch_calendar()
+    with _cal_lock:
+        if events is None:
+            _cal["ok"] = False  # نُبقي آخر بيانات جيدة ونعيد المحاولة لاحقاً
+        else:
+            _cal.update(events=events, fetched=time.time(), ok=True)
+
+
+def _num(v):
+    m = re.search(r"-?\d+(?:\.\d+)?\s*([KMBTkmbt])?", str(v).replace(",", ""))
+    if not m:
+        return None
+    x = float(re.search(r"-?\d+(?:\.\d+)?", m.group(0)).group(0))
+    return x * {"k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12}.get((m.group(1) or "").lower(), 1)
+
+
+def compare_actual(actual, forecast):
+    a, f = _num(actual), _num(forecast)
+    if a is None or f is None:
+        return ""
+    if abs(a - f) <= max(1e-9, abs(f) * 0.001):
+        return "مطابق للتوقع"
+    return "أعلى من المتوقع" if a > f else "أقل من المتوقع"
+
+
+def _local(ts, fmt="%H:%M"):
+    return datetime.fromtimestamp(ts, timezone.utc).astimezone(CAL_TZ).strftime(fmt)
+
+
+def _details(e):
+    parts = []
+    if e["actual"]:
+        parts.append(f"الفعلي: {e['actual']}")
+    if e["forecast"]:
+        parts.append(f"التوقع: {e['forecast']}")
+    if e["previous"]:
+        parts.append(f"السابق: {e['previous']}")
+    return " • ".join(parts)
+
+
+def _emit_event_alert(country, kind, text):
+    alert = save_alert(country, "event", kind, 0, None, None, text)
+    if alert:
+        broadcast_alert(alert)
+        notify("📅 " + text.splitlines()[0])
+
+
+def calendar_tick():
+    refresh_calendar()
+    now = time.time()
+    with _cal_lock:
+        events = list(_cal["events"])
+    groups = {}
+    for e in events:
+        if -5400 <= e["ts"] - now <= CAL_LEAD_MIN * 60:
+            groups.setdefault(e["ts"], []).append(e)
+    for ts, grp in groups.items():
+        delta, country = ts - now, grp[0]["country"]
+        names = "، ".join(dict.fromkeys(e["title_ar"] for e in grp))
+        if 0 < delta <= CAL_LEAD_MIN * 60:
+            lines = [f"بيانات {country} عالية التأثير بعد {max(1, round(delta / 60))} دقيقة "
+                     f"(الساعة {_local(ts)} بتوقيت عمّان): {names}"]
+            lines += [f"{e['title_ar']}: {_details(e)}" for e in grp[:4] if _details(e)]
+            _emit_event_alert(country, f"econ_soon:{int(ts)}", "\n".join(lines))
+        if -600 <= delta <= 0:
+            _emit_event_alert(country, f"econ_now:{int(ts)}", f"صدرت الآن بيانات {country} عالية التأثير: {names}")
+        for e in grp:
+            if e["actual"] and delta <= 0:
+                verdict = compare_actual(e["actual"], e["forecast"])
+                head = f"{e['title_ar']}" + (f": {verdict}" if verdict else " صدر")
+                _emit_event_alert(country, f"econ_actual:{int(ts)}:{zlib.crc32(e['title'].encode()) % 10**6}",
+                                  head + "\n" + _details(e))
+
+
+def calendar_loop():
+    time.sleep(40)
+    while True:
+        try:
+            calendar_tick()
+        except Exception:
+            logger.exception("Calendar cycle failed")
+        time.sleep(60)
+
+
+def upcoming_events(hours=24, limit=6):
+    now = time.time()
+    with _cal_lock:
+        evs = [e for e in _cal["events"] if -3600 <= e["ts"] - now <= hours * 3600]
+    return evs[:limit]
+
+
 ALERT_HINTS = {
+    "econ_soon": "تنبيه بموعد حدث اقتصادي، وليس توقعاً لاتجاه السعر. قد يزداد التذبذب وتتسع فروق الأسعار لحظة الصدور.",
+    "econ_now": "صدر الحدث للتو. التذبذب غالباً أعلى من المعتاد في الدقائق الأولى. افتح التحليل لقراءة الصورة كاملة.",
+    "econ_actual": "مقارنة رقمية بين الفعلي والتوقع فقط، وأثرها على الأسعار يتحدد بسياق السوق وليس بالمقارنة وحدها.",
     "sweep_low": "اختُرق قاع سابق بذيل الشمعة ثم أُغلقت فوقه. يُقرأ كقوة محتملة، وليس إشارة شراء بمفرده.",
     "sweep_high": "اختُرقت قمة سابقة بذيل الشمعة ثم أُغلقت تحتها. يُقرأ كضعف محتمل، وليس إشارة بيع بمفرده.",
     "choch_bull": "كُسرت آخر قمة هيكلية بعد اتجاه هابط. قد تكون بداية تحول صاعد وتحتاج تأكيداً.",
@@ -1509,7 +1712,7 @@ def _alert_dict(r):
     return {"id": r["id"], "ts": r["created_at"],
             "time": datetime.fromtimestamp(r["created_at"], timezone.utc).strftime("%m-%d %H:%M UTC"),
             "symbol": r["symbol"], "interval": r["interval"], "kind": r["kind"], "dir": r["direction"],
-            "action": r["action"], "price": r["price"], "text": r["text"], "hint": ALERT_HINTS.get(r["kind"], "")}
+            "action": r["action"], "price": r["price"], "text": r["text"], "hint": ALERT_HINTS.get(r["kind"].split(":")[0], "")}
 
 
 def save_alert(symbol, interval, kind, dir_, price, action, text):
@@ -1699,6 +1902,7 @@ ul{padding-right:18px}li{margin:4px 0}p{line-height:1.7}
 <select id="tf"><option value="15m">15m</option><option value="1h">1h</option><option value="4h" selected>4h</option><option value="1d">1d</option></select>
 <button id="btn" onclick="run(true)">تحليل بالذكاء الاصطناعي</button>
 <button id="btn2" class="alt" onclick="run(false)">تحليل بدون AI (مجاني)</button></div>
+<div class="card" style="margin-bottom:14px"><h3>📅 أحداث أمريكية قادمة (تأثير عالٍ)</h3><div id="cal"><p class="lbl">جارٍ التحميل...</p></div></div>
 <div class="card" style="margin-bottom:14px"><h3>🚨 رادار التنبيهات التلقائية</h3><div id="alerts"></div></div>
 <div id="status" class="msg hidden"></div>
 <div id="out" class="hidden"></div>
@@ -1781,7 +1985,33 @@ function addAlert(a){
 function renderAlerts(){
   const el=$('alerts');
   if(!alerts.length){el.innerHTML='<p class="lbl">الرادار يراقب الأصول المحددة كل 5 دقائق. لا توجد تنبيهات بعد.</p>';return;}
-  el.innerHTML=alerts.map(a=>'<div class="alert '+(a.dir>0?'up':a.dir<0?'down':'')+'"><div class="ah"><b>'+esc(a.symbol)+' ('+esc(a.interval)+')</b><span class="lbl">'+esc(a.time)+'</span></div><div>'+esc(a.text)+'</div>'+(a.hint?'<div class="hint">💡 '+esc(a.hint)+'</div>':'')+'<div class="lbl">السعر: <span class="ltr">'+fmt(a.price)+'</span></div><button class="mini alt" data-sym="'+esc(a.symbol)+'" data-tf="'+esc(a.interval)+'">عرض التحليل (بدون AI)</button></div>').join('');
+  el.innerHTML=alerts.map(a=>{
+    const ev=a.interval==='event';
+    const parts=String(a.text||'').split('\n');
+    const head=ev?'<b>📅 '+esc(a.symbol)+' — حدث اقتصادي</b>':'<b>'+esc(a.symbol)+' ('+esc(a.interval)+')</b>';
+    let h='<div class="alert '+(a.dir>0?'up':a.dir<0?'down':'')+'"><div class="ah">'+head+'<span class="lbl">'+esc(a.time)+'</span></div><div>'+esc(parts[0])+'</div>';
+    parts.slice(1).forEach(t=>{h+='<div class="lbl">'+esc(t)+'</div>';});
+    if(a.hint)h+='<div class="hint">💡 '+esc(a.hint)+'</div>';
+    if(!ev)h+='<div class="lbl">السعر: <span class="ltr">'+fmt(a.price)+'</span></div><button class="mini alt" data-sym="'+esc(a.symbol)+'" data-tf="'+esc(a.interval)+'">عرض التحليل (بدون AI)</button>';
+    return h+'</div>';
+  }).join('');
+}
+async function loadCal(){
+  const el=$('cal');
+  try{
+    const r=await fetch('/api/calendar',{headers:HDR});
+    if(!r.ok)throw new Error('http '+r.status);
+    const d=await r.json();
+    const ev=d.events||[];
+    if(!ev.length){el.innerHTML='<p class="lbl">'+esc(d.note||'لا توجد أحداث قريبة.')+'</p>';return;}
+    el.innerHTML=ev.map(e=>{
+      const bits=[];
+      if(e.actual)bits.push('الفعلي: '+ltr(e.actual));
+      if(e.forecast)bits.push('التوقع: '+ltr(e.forecast));
+      if(e.previous)bits.push('السابق: '+ltr(e.previous));
+      return '<div class="srow"'+(e.past?' style="opacity:.6"':'')+'><div><b>'+esc(e.title_ar)+'</b></div><div class="lbl">'+ltr(e.time)+' بتوقيت عمّان'+(bits.length?' • '+bits.join(' • '):'')+'</div></div>';
+    }).join('');
+  }catch(err){el.innerHTML='<p class="lbl">تعذر تحميل التقويم.</p>';}
 }
 function setSymbol(sym){
   const sel=$('symbol');
@@ -1883,7 +2113,7 @@ function render(d){
   h+='<p class="lbl" style="text-align:center">⚠️ هذه ليست نصيحة مالية. التحليل أداة مساعدة ولا يضمن نتيجة.</p>';
   $('out').innerHTML=h;
 }
-renderAlerts();pollAlerts();setInterval(pollAlerts,60000);connectWS();loadPerf();
+renderAlerts();pollAlerts();setInterval(pollAlerts,60000);connectWS();loadPerf();loadCal();setInterval(loadCal,600000);
 </script></body></html>"""
 
 app = Flask(__name__)
@@ -2006,6 +2236,29 @@ def api_alerts():
         return jsonify({"error": "تعذر جلب التنبيهات"}), 500
 
 
+@app.route("/api/calendar")
+def api_calendar():
+    if not authorized():
+        return jsonify({"error": "غير مصرح"}), 401
+    if rate_limited(client_ip(), limit=30, bucket="calendar"):
+        return jsonify({"error": "عدد الطلبات كبير"}), 429
+    if not CALENDAR_ENABLED:
+        return jsonify({"events": [], "note": "تنبيهات التقويم متوقفة (CALENDAR_ALERTS=0)"})
+    refresh_calendar()
+    now = time.time()
+    with _cal_lock:
+        evs = [e for e in _cal["events"] if -3600 <= e["ts"] - now <= 7 * 86400]
+        ok, fetched = _cal["ok"], _cal["fetched"]
+    out = [{"time": _local(e["ts"], "%m-%d %H:%M"), "title_ar": e["title_ar"], "title": e["title"],
+            "forecast": e["forecast"], "previous": e["previous"], "actual": e["actual"],
+            "past": e["ts"] < now} for e in evs[:20]]
+    note = None
+    if not out:
+        note = ("لا أحداث عالية التأثير في الأسبوع القادم." if fetched else
+                "تعذر جلب التقويم من المصدر حالياً، وسأعيد المحاولة تلقائياً.")
+    return jsonify({"events": out, "note": note, "source_ok": ok})
+
+
 @app.route("/api/evaluate", methods=["POST"])
 def api_evaluate():
     if not authorized():
@@ -2043,6 +2296,8 @@ def main():
                 ",".join(f"{s}:{t}" for s, t in parse_watchlist()))
     threading.Thread(target=tracker_loop, daemon=True).start()
     threading.Thread(target=scanner_loop, daemon=True).start()
+    if CALENDAR_ENABLED:
+        threading.Thread(target=calendar_loop, daemon=True).start()
     run_flask()
 
 
