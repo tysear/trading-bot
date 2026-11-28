@@ -1,5 +1,5 @@
 """
-Quant Trading Bot v4.3 (web)
+Quant Trading Bot v5.0 (web)
 ============================
 تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي، مع رادار تنبيهات حي ومتابعة نتائج الإشارات.
 
@@ -1844,6 +1844,389 @@ def tracker_loop():
 # ==========================================
 # Flask: واجهة الويب
 # ==========================================
+# ==========================================
+# منصة الرسم (/chart): شموع + مؤشرات + طبقات SMC + أدوات رسم
+# ==========================================
+def _line_series(times, values):
+    out = []
+    for t, v in zip(times, values):
+        if v is not None and np.isfinite(v):
+            out.append({"time": t, "value": round(float(v), 8)})
+    return out
+
+
+def chart_payload(symbol, interval):
+    df = fetch_ohlcv(symbol, interval)
+    if df is None or len(df) < 30:
+        return None
+    df = df[~df.index.duplicated(keep="last")].sort_index().tail(300)
+    times = [int(ts.timestamp()) for ts in df.index]
+    n = len(df)
+    o, h, l, c = (df[k].values.astype(float) for k in ("open", "high", "low", "close"))
+    v = df["volume"].values.astype(float)
+    close = df["close"]
+    candles = [{"time": times[i], "open": o[i], "high": h[i], "low": l[i], "close": c[i],
+                "volume": v[i] if np.isfinite(v[i]) else 0.0} for i in range(n)]
+    ma, sd = close.rolling(20).mean(), close.rolling(20).std(ddof=0)
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
+    out = {
+        "symbol": symbol, "interval": interval, "candles": candles,
+        "ema20": _line_series(times, close.ewm(span=20, adjust=False).mean()),
+        "ema50": _line_series(times, close.ewm(span=50, adjust=False).mean()),
+        "ema200": _line_series(times, close.ewm(span=200, adjust=False).mean()),
+        "bb_upper": _line_series(times, ma + 2 * sd), "bb_mid": _line_series(times, ma),
+        "bb_lower": _line_series(times, ma - 2 * sd),
+        "rsi": _line_series(times, rsi_wilder(close)),
+        "macd": _line_series(times, macd), "macd_signal": _line_series(times, signal),
+        "macd_hist": _line_series(times, macd - signal),
+        "zones": [], "liquidity": [], "markers": [], "equilibrium": None, "events": [],
+    }
+    try:
+        atr = float(atr_wilder(df["high"], df["low"], df["close"]).iloc[-1])
+        smc = smc_analysis(df, atr)
+        if smc:
+            at = lambda k: times[max(0, n - 1 - int(k))]
+            for z in smc["fvg"]:
+                out["zones"].append({"kind": "fvg", "dir": z["dir"], "low": z["low"], "high": z["high"], "time": at(z["bars_ago"])})
+            for z in smc["order_blocks"]:
+                out["zones"].append({"kind": "ob", "dir": z["dir"], "low": z["low"], "high": z["high"], "time": at(z["bars_ago"])})
+            for side, key in (("above", "liquidity_above"), ("below", "liquidity_below")):
+                for z in smc[key]:
+                    out["liquidity"].append({"level": z["level"], "equal": bool(z["equal"]), "side": side})
+            out["equilibrium"] = smc["zone"]["equilibrium"]
+            highs_idx, lows_idx = _pivots(h, l)
+            _, events = _structure(h, l, c)
+            marks = [{"time": times[e["idx"]], "kind": e["type"], "dir": e["dir"]} for e in events[-14:]]
+            marks += [{"time": times[s["idx"]], "kind": "SWP", "dir": s["dir"]}
+                      for s in _sweeps(h, l, c, highs_idx, lows_idx)[-10:]]
+            out["markers"] = sorted(marks, key=lambda m: m["time"])
+    except Exception:
+        logger.exception("chart SMC overlay failed")
+    if CALENDAR_ENABLED:
+        with _cal_lock:
+            src = list(_cal["events"])
+        out["events"] = [{"time": int(e["ts"]), "title": e["title_ar"], "forecast": e["forecast"],
+                          "previous": e["previous"], "actual": e["actual"]}
+                         for e in src if times[0] <= e["ts"] <= times[-1] + 7 * 86400][:30]
+    return out
+
+
+CHART_HTML = r"""<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>منصة الرسم</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--txt:#e6edf3;--mut:#8b949e;--up:#26a69a;--dn:#ef5350;--acc:#58a6ff}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif}
+  body{display:flex;flex-direction:column}
+  .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .bar .sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  .bar button,.bar input{background:#21262d;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px;font-family:inherit}
+  .bar button{cursor:pointer;min-height:32px}
+  .bar button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .bar input{width:120px;direction:ltr;text-transform:uppercase}
+  .bar a{color:var(--acc);text-decoration:none;font-size:13px}
+  #legend{direction:ltr;font-size:12px;color:var(--mut);padding:4px 10px;min-height:22px;background:var(--panel);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #legend b{color:var(--txt);font-weight:600}
+  #wrap{flex:1;min-height:0;display:flex;flex-direction:column;direction:ltr}
+  #mainBox{position:relative;flex:3;min-height:200px}
+  #main,#rsiBox,#macdBox{width:100%;height:100%}
+  #ov{position:absolute;left:0;top:0;pointer-events:none}
+  #rsiWrap{flex:.8;min-height:70px;position:relative;border-top:1px solid var(--line)}
+  #macdWrap{flex:.9;min-height:70px;position:relative;border-top:1px solid var(--line)}
+  .tag{position:absolute;left:6px;top:3px;font-size:11px;color:var(--mut);z-index:3;pointer-events:none}
+  #msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--mut);z-index:5;direction:rtl;background:rgba(13,17,23,.85);line-height:1.8}
+  #hintbar{font-size:12px;color:var(--mut);padding:3px 10px;background:var(--panel);border-top:1px solid var(--line);min-height:22px}
+</style></head><body>
+<div class="bar">
+  <input id="sym" list="syms" value="BTC-USD" aria-label="الرمز">
+  <datalist id="syms"><option>BTC-USD</option><option>ETH-USD</option><option>XRP-USD</option><option>SOL-USD</option>
+  <option value="GC=F"></option><option value="SI=F"></option><option value="CL=F"></option>
+  <option value="EURUSD=X"></option><option value="GBPUSD=X"></option><option value="USDJPY=X"></option>
+  <option value="^GSPC"></option><option value="^IXIC"></option><option>AAPL</option><option>TSLA</option><option>NVDA</option></datalist>
+  <button id="go">عرض</button>
+  <span class="sep"></span>
+  <span id="tfs"></span>
+  <span class="sep"></span>
+  <button data-ind="ema">EMA</button><button data-ind="bb">BB</button><button data-ind="vol">حجم</button>
+  <button data-ind="smc">SMC</button><button data-ind="news">أخبار</button><button data-ind="sub">RSI/MACD</button>
+  <span class="sep"></span>
+  <button data-tool="cursor" class="on">مؤشر</button><button data-tool="hline">أفقي</button>
+  <button data-tool="trend">خط</button><button data-tool="rect">مستطيل</button>
+  <button id="undo">تراجع</button><button id="clear">مسح</button>
+  <span class="sep"></span>
+  <a id="back" href="/dashboard">← اللوحة</a>
+</div>
+<div id="legend">&nbsp;</div>
+<div id="wrap">
+  <div id="mainBox"><div id="main"></div><canvas id="ov"></canvas><div id="msg">جارٍ التحميل…</div></div>
+  <div id="rsiWrap"><div class="tag">RSI 14</div><div id="rsiBox"></div></div>
+  <div id="macdWrap"><div class="tag">MACD 12/26/9</div><div id="macdBox"></div></div>
+</div>
+<div id="hintbar">أدوات الرسم: اختر أداة ثم انقر على الرسم (الخط والمستطيل نقرتان). الرسومات تُحفظ في متصفحك فقط. ليست نصيحة مالية.</div>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var qs=new URLSearchParams(location.search), token=qs.get('token')||'';
+var HDR={'X-Token':token};
+var TFS=['15m','1h','4h','1d'];
+var st={sym:(qs.get('symbol')||'BTC-USD').toUpperCase(),tf:qs.get('tf')||'1h',tool:'cursor',pending:null,data:null,
+        ind:{ema:true,bb:false,vol:true,smc:true,news:true,sub:true},drawings:[]};
+if(TFS.indexOf(st.tf)<0)st.tf='1h';
+var OFF=-new Date().getTimezoneOffset()*60;
+var tz=function(t){return t+OFF};
+try{var saved=JSON.parse(localStorage.getItem('chart_ind')||'null');if(saved)for(var k in saved)if(k in st.ind)st.ind[k]=!!saved[k];}catch(e){}
+$('back').href='/dashboard'+(token?'?token='+encodeURIComponent(token):'');
+
+function showMsg(t){var m=$('msg');if(t){m.textContent=t;m.style.display='flex'}else m.style.display='none'}
+if(typeof LightweightCharts==='undefined'){
+  showMsg('تعذر تحميل مكتبة الرسم (LightweightCharts) من unpkg.com. تحقق من الاتصال بالإنترنت أو من حاجب الإعلانات ثم أعد تحميل الصفحة.');
+  return;
+}
+var LC=LightweightCharts;
+var common={layout:{background:{color:'#0d1117'},textColor:'#8b949e'},
+  grid:{vertLines:{color:'rgba(48,54,61,.5)'},horzLines:{color:'rgba(48,54,61,.5)'}},
+  crosshair:{mode:LC.CrosshairMode.Normal},rightPriceScale:{borderColor:'#30363d'},
+  timeScale:{borderColor:'#30363d',timeVisible:true,secondsVisible:false,rightOffset:6},
+  handleScroll:true,handleScale:true};
+var chart=LC.createChart($('main'),Object.assign({autoSize:true},common));
+var rsiC=LC.createChart($('rsiBox'),Object.assign({autoSize:true},common));
+var macdC=LC.createChart($('macdBox'),Object.assign({autoSize:true},common));
+
+var candle=chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
+var vol=chart.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'vol',lastValueVisible:false,priceLineVisible:false});
+chart.priceScale('vol').applyOptions({scaleMargins:{top:.82,bottom:0}});
+var ln=function(c,col,w,dash){return chart.addLineSeries({color:col,lineWidth:w||1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,lineStyle:dash||0})};
+var ema20=ln(0,'#f0b429',1),ema50=ln(0,'#58a6ff',1),ema200=ln(0,'#bc8cff',2);
+var bbU=ln(0,'rgba(139,148,158,.8)',1,2),bbM=ln(0,'rgba(139,148,158,.5)',1,1),bbL=ln(0,'rgba(139,148,158,.8)',1,2);
+var rsiS=rsiC.addLineSeries({color:'#d2a8ff',lineWidth:1,priceLineVisible:false});
+rsiS.createPriceLine({price:70,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+rsiS.createPriceLine({price:30,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+var mH=macdC.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
+var mL=macdC.addLineSeries({color:'#58a6ff',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+var mS=macdC.addLineSeries({color:'#f0b429',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+
+// مزامنة النطاق الزمني والمؤشر بين الرسوم الثلاثة
+var syncing=false;
+function link(src,others){
+  src.timeScale().subscribeVisibleLogicalRangeChange(function(r){
+    if(syncing||!r)return;syncing=true;
+    others.forEach(function(o){try{o.timeScale().setVisibleLogicalRange(r)}catch(e){}});
+    syncing=false;
+  });
+}
+link(chart,[rsiC,macdC]);link(rsiC,[chart,macdC]);link(macdC,[chart,rsiC]);
+
+var priceLines=[];
+function tv(arr){return (arr||[]).map(function(p){return {time:tz(p.time),value:p.value}})}
+
+function fmtP(p){
+  if(p==null||!isFinite(p))return '-';
+  var a=Math.abs(p);return a>=1000?p.toFixed(2):a>=10?p.toFixed(3):a>=1?p.toFixed(4):p.toFixed(6);
+}
+function setPrecision(c){
+  var last=c.length?c[c.length-1].close:1,a=Math.abs(last);
+  var d=a>=1000?2:a>=10?3:a>=1?4:6;
+  candle.applyOptions({priceFormat:{type:'price',precision:d,minMove:Math.pow(10,-d)}});
+}
+
+function render(first){
+  var d=st.data;if(!d)return;
+  var range=null;
+  if(!first){try{range=chart.timeScale().getVisibleLogicalRange()}catch(e){}}
+  var cs=d.candles.map(function(c){return {time:tz(c.time),open:c.open,high:c.high,low:c.low,close:c.close}});
+  setPrecision(d.candles);
+  candle.setData(cs);
+  vol.setData(d.candles.map(function(c){return {time:tz(c.time),value:c.volume,color:c.close>=c.open?'rgba(38,166,154,.4)':'rgba(239,83,80,.4)'}}));
+  ema20.setData(tv(d.ema20));ema50.setData(tv(d.ema50));ema200.setData(tv(d.ema200));
+  bbU.setData(tv(d.bb_upper));bbM.setData(tv(d.bb_mid));bbL.setData(tv(d.bb_lower));
+  rsiS.setData(tv(d.rsi));
+  mH.setData((d.macd_hist||[]).map(function(p){return {time:tz(p.time),value:p.value,color:p.value>=0?'rgba(38,166,154,.6)':'rgba(239,83,80,.6)'}}));
+  mL.setData(tv(d.macd));mS.setData(tv(d.macd_signal));
+  applyVis();
+  priceLines.forEach(function(pl){try{candle.removePriceLine(pl)}catch(e){}});priceLines=[];
+  if(st.ind.smc){
+    (d.liquidity||[]).forEach(function(z){
+      priceLines.push(candle.createPriceLine({price:z.level,color:z.side==='above'?'rgba(239,83,80,.8)':'rgba(38,166,154,.8)',lineWidth:1,lineStyle:2,
+        axisLabelVisible:true,title:(z.side==='above'?'سيولة ↑':'سيولة ↓')+(z.equal?' =':'')}));
+    });
+    if(d.equilibrium!=null)priceLines.push(candle.createPriceLine({price:d.equilibrium,color:'rgba(139,148,158,.9)',lineWidth:1,lineStyle:1,axisLabelVisible:true,title:'EQ'}));
+    var mk=(d.markers||[]).map(function(m){
+      var bull=m.dir>0;
+      return {time:tz(m.time),position:bull?'belowBar':'aboveBar',color:m.kind==='SWP'?'#f0b429':(bull?'#26a69a':'#ef5350'),
+        shape:m.kind==='SWP'?'square':(m.kind==='CHoCH'?'circle':(bull?'arrowUp':'arrowDown')),text:m.kind};
+    });
+    candle.setMarkers(mk);
+  }else candle.setMarkers([]);
+  if(first){chart.timeScale().setVisibleLogicalRange({from:Math.max(0,cs.length-110),to:cs.length+6})}
+  else if(range){try{chart.timeScale().setVisibleLogicalRange(range)}catch(e){}}
+  dirty=true;
+}
+
+function applyVis(){
+  var i=st.ind;
+  [ema20,ema50,ema200].forEach(function(s){s.applyOptions({visible:i.ema})});
+  [bbU,bbM,bbL].forEach(function(s){s.applyOptions({visible:i.bb})});
+  vol.applyOptions({visible:i.vol});
+  $('rsiWrap').style.display=$('macdWrap').style.display=i.sub?'block':'none';
+  document.querySelectorAll('[data-ind]').forEach(function(b){b.classList.toggle('on',!!st.ind[b.dataset.ind])});
+}
+
+// ===== طبقة الرسم (مناطق SMC + الأخبار + أدوات الرسم) =====
+var cv=$('ov'),ctx=cv.getContext('2d'),dirty=true,lastSig='';
+function sizeCanvas(){
+  var b=$('mainBox'),r=window.devicePixelRatio||1,w=b.clientWidth,h=b.clientHeight;
+  if(cv.width!==Math.round(w*r)||cv.height!==Math.round(h*r)){
+    cv.width=Math.round(w*r);cv.height=Math.round(h*r);cv.style.width=w+'px';cv.style.height=h+'px';
+  }
+  ctx.setTransform(r,0,0,r,0,0);return {w:w,h:h};
+}
+function X(t){var x=chart.timeScale().timeToCoordinate(tz(t));return x}
+function Y(p){return candle.priceToCoordinate(p)}
+function zoneRect(z,w){
+  var x1=X(z.time),y1=Y(z.high),y2=Y(z.low);
+  if(y1==null||y2==null)return null;
+  if(x1==null)x1=0;
+  return {x:Math.max(0,x1),y:Math.min(y1,y2),w:Math.max(2,w-Math.max(0,x1)),h:Math.max(2,Math.abs(y2-y1))};
+}
+function draw(){
+  var s=sizeCanvas(),w=s.w,h=s.h;ctx.clearRect(0,0,w,h);
+  var d=st.data;if(!d)return;
+  var pw=chart.priceScale('right').width();var right=w-pw;
+  ctx.save();ctx.beginPath();ctx.rect(0,0,right,h);ctx.clip();
+  if(st.ind.smc){
+    (d.zones||[]).forEach(function(z){
+      var r=zoneRect(z,right);if(!r)return;
+      var up=z.dir>0,ob=z.kind==='ob';
+      ctx.fillStyle=ob?(up?'rgba(38,166,154,.22)':'rgba(239,83,80,.22)'):(up?'rgba(88,166,255,.14)':'rgba(240,180,41,.14)');
+      ctx.fillRect(r.x,r.y,r.w,r.h);
+      ctx.strokeStyle=ob?(up?'rgba(38,166,154,.8)':'rgba(239,83,80,.8)'):'rgba(139,148,158,.5)';
+      ctx.lineWidth=1;ctx.strokeRect(r.x+.5,r.y+.5,r.w-1,r.h-1);
+      ctx.fillStyle='rgba(230,237,243,.85)';ctx.font='11px system-ui';
+      ctx.fillText((ob?'OB ':'FVG ')+(up?'↑':'↓'),r.x+4,r.y+12);
+    });
+  }
+  if(st.ind.news){
+    (d.events||[]).forEach(function(e){
+      var x=X(e.time);if(x==null||x<0||x>right)return;
+      ctx.strokeStyle='rgba(240,180,41,.7)';ctx.setLineDash([4,4]);ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,h);ctx.stroke();ctx.setLineDash([]);
+      ctx.save();ctx.translate(x-3,6);ctx.rotate(Math.PI/2);ctx.fillStyle='rgba(240,180,41,.95)';ctx.font='11px system-ui';
+      ctx.fillText('USD '+e.title,0,0);ctx.restore();
+    });
+  }
+  // رسومات المستخدم
+  st.drawings.forEach(function(g){drawShape(g,right,false)});
+  if(st.pending&&st.hover)drawShape(Object.assign({},st.pending,{p2:st.hover}),right,true);
+  ctx.restore();
+}
+function drawShape(g,right,preview){
+  ctx.lineWidth=1.5;ctx.strokeStyle=preview?'rgba(88,166,255,.7)':'#58a6ff';ctx.fillStyle='rgba(88,166,255,.12)';
+  if(g.type==='hline'){
+    var y=Y(g.p1.price);if(y==null)return;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(right,y);ctx.stroke();
+    ctx.fillStyle='#58a6ff';ctx.font='11px system-ui';ctx.fillText(fmtP(g.p1.price),6,y-4);return;
+  }
+  var x1=X(g.p1.time),y1=Y(g.p1.price),x2=X(g.p2.time),y2=Y(g.p2.price);
+  if(x1==null||x2==null||y1==null||y2==null)return;
+  if(g.type==='trend'){
+    var dx=x2-x1,dy=y2-y1;ctx.beginPath();ctx.moveTo(x1,y1);
+    if(Math.abs(dx)>1){var k=dy/dx;ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([2,4]);ctx.beginPath();ctx.moveTo(x2,y2);
+      var xe=dx>0?right:0;ctx.lineTo(xe,y2+k*(xe-x2));ctx.stroke();ctx.setLineDash([]);}
+    else{ctx.lineTo(x2,y2);ctx.stroke();}
+    [[x1,y1],[x2,y2]].forEach(function(p){ctx.beginPath();ctx.arc(p[0],p[1],3,0,7);ctx.fillStyle='#58a6ff';ctx.fill()});
+  }else if(g.type==='rect'){
+    ctx.fillStyle='rgba(88,166,255,.12)';ctx.fillRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+    ctx.strokeRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+  }
+}
+function sig(){
+  var r=chart.timeScale().getVisibleLogicalRange();
+  return [r?r.from.toFixed(3):'',r?r.to.toFixed(3):'',Y(1)==null?'':Y(1).toFixed(2),Y(1000)==null?'':Y(1000).toFixed(2),$('mainBox').clientWidth,$('mainBox').clientHeight].join('|');
+}
+(function loop(){
+  try{var s=sig();if(dirty||s!==lastSig){lastSig=s;dirty=false;draw()}}catch(e){}
+  requestAnimationFrame(loop);
+})();
+
+// ===== أدوات الرسم =====
+function dkey(){return 'drw:'+st.sym}
+function loadDrawings(){try{st.drawings=JSON.parse(localStorage.getItem(dkey())||'[]')||[]}catch(e){st.drawings=[]}}
+function saveDrawings(){try{localStorage.setItem(dkey(),JSON.stringify(st.drawings))}catch(e){}}
+chart.subscribeClick(function(p){
+  if(st.tool==='cursor'||!p.point)return;
+  var price=candle.coordinateToPrice(p.point.y);if(price==null)return;
+  var t=p.time!=null?p.time-OFF:null;
+  if(st.tool==='hline'){st.drawings.push({type:'hline',p1:{price:price}});saveDrawings();dirty=true;return}
+  if(t==null)return;
+  var pt={time:t,price:price};
+  if(!st.pending){st.pending={type:st.tool,p1:pt};st.hover=pt;setHint('انقر على النقطة الثانية…')}
+  else{st.drawings.push({type:st.pending.type,p1:st.pending.p1,p2:pt});st.pending=null;st.hover=null;saveDrawings();setHint('');}
+  dirty=true;
+});
+function setHint(t){$('hintbar').textContent=t||'أدوات الرسم: اختر أداة ثم انقر على الرسم (الخط والمستطيل نقرتان). الرسومات تُحفظ في متصفحك فقط. ليست نصيحة مالية.'}
+
+// وسيلة الإيضاح (OHLC عند تحريك المؤشر)
+chart.subscribeCrosshairMove(function(p){
+  if(st.pending&&p&&p.time!=null&&p.point){var pr=candle.coordinateToPrice(p.point.y);if(pr!=null){st.hover={time:p.time-OFF,price:pr};dirty=true}}
+  var d=st.data;if(!d)return;
+  var row=p&&p.seriesData?p.seriesData.get(candle):null;
+  if(!row){var l=d.candles[d.candles.length-1];row=l?{open:l.open,high:l.high,low:l.low,close:l.close}:null}
+  if(!row)return;
+  var chg=row.open?((row.close-row.open)/row.open*100):0,col=row.close>=row.open?'#26a69a':'#ef5350';
+  $('legend').innerHTML='<b>'+st.sym+'</b> · '+st.tf+' &nbsp; O <b>'+fmtP(row.open)+'</b> H <b>'+fmtP(row.high)+'</b> L <b>'+fmtP(row.low)+'</b> C <b style="color:'+col+'">'+fmtP(row.close)+'</b> <span style="color:'+col+'">'+(chg>=0?'+':'')+chg.toFixed(2)+'%</span>';
+});
+// مزامنة المؤشر مع الرسمين السفليين
+chart.subscribeCrosshairMove(function(p){
+  if(!p||p.time==null){rsiC.clearCrosshairPosition();macdC.clearCrosshairPosition();return}
+  try{rsiC.setCrosshairPosition(NaN,p.time,rsiS);macdC.setCrosshairPosition(NaN,p.time,mL)}catch(e){}
+});
+
+// ===== الواجهة =====
+var tfBox=$('tfs');
+TFS.forEach(function(t){var b=document.createElement('button');b.textContent=t;b.dataset.tf=t;b.onclick=function(){st.tf=t;load(true)};tfBox.appendChild(b);tfBox.appendChild(document.createTextNode(' '))});
+function markTf(){tfBox.querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b.dataset.tf===st.tf)})}
+document.querySelectorAll('[data-ind]').forEach(function(b){b.onclick=function(){
+  var k=b.dataset.ind;st.ind[k]=!st.ind[k];try{localStorage.setItem('chart_ind',JSON.stringify(st.ind))}catch(e){}
+  render(false);dirty=true;
+}});
+document.querySelectorAll('[data-tool]').forEach(function(b){b.onclick=function(){
+  st.tool=b.dataset.tool;st.pending=null;st.hover=null;
+  document.querySelectorAll('[data-tool]').forEach(function(x){x.classList.toggle('on',x===b)});
+  setHint(st.tool==='hline'?'انقر لوضع خط أفقي':st.tool==='cursor'?'':'انقر على النقطة الأولى…');dirty=true;
+}});
+$('undo').onclick=function(){st.drawings.pop();saveDrawings();dirty=true};
+$('clear').onclick=function(){if(st.drawings.length&&confirm('مسح كل الرسومات على هذا الرمز؟')){st.drawings=[];saveDrawings();dirty=true}};
+$('go').onclick=function(){var v=$('sym').value.trim().toUpperCase();if(v){st.sym=v;load(true)}};
+$('sym').addEventListener('keydown',function(e){if(e.key==='Enter')$('go').click()});
+
+var busy=false;
+function load(first){
+  if(busy)return;busy=true;
+  if(first){showMsg('جارٍ تحميل '+st.sym+' …');loadDrawings();st.pending=null}
+  $('sym').value=st.sym;markTf();
+  fetch('/api/ohlc?symbol='+encodeURIComponent(st.sym)+'&interval='+st.tf,{headers:HDR}).then(function(r){
+    return r.json().then(function(j){return {ok:r.ok,j:j}});
+  }).then(function(x){
+    if(!x.ok||!x.j||!x.j.candles){showMsg((x.j&&x.j.error)||'تعذر جلب البيانات');return}
+    st.data=x.j;showMsg('');render(first);
+    var u=new URL(location.href);u.searchParams.set('symbol',st.sym);u.searchParams.set('tf',st.tf);
+    try{history.replaceState(null,'',u)}catch(e){}
+    var l=x.j.candles[x.j.candles.length-1];
+    if(first&&l)$('legend').innerHTML='<b>'+st.sym+'</b> · '+st.tf+' &nbsp; C <b>'+fmtP(l.close)+'</b>';
+  }).catch(function(){showMsg('خطأ في الاتصال بالخادم')}).then(function(){busy=false});
+}
+window.addEventListener('resize',function(){dirty=true});
+setInterval(function(){if(!document.hidden)load(false)},60000);
+$('sym').value=st.sym;loadDrawings();applyVis();load(true);
+})();
+</script></body></html>
+"""
+
+
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="ar" dir="rtl"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quant Trading Bot</title>
@@ -1889,7 +2272,7 @@ ul{padding-right:18px}li{margin:4px 0}p{line-height:1.7}
   details summary{cursor:pointer;margin-top:8px}
 </style></head><body><div class="wrap">
 <h1>Quant Trading Bot</h1>
-<div class="sub">تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي <span class="ws" id="wsStatus"></span></div>
+<div class="sub">تحليل كمي + الهندسة العكسية (Smart Money) + أخبار + ذكاء اصطناعي <span class="ws" id="wsStatus"></span> &nbsp;<a href="#" style="color:#58a6ff" onclick="location.href='/chart?symbol='+encodeURIComponent($('symbol').value)+(token?'&token='+encodeURIComponent(token):'');return false">📈 منصة الرسم</a></div>
 <div class="panel">
 <select id="symbol">
 <optgroup label="Crypto"><option>BTC-USD</option><option>ETH-USD</option><option selected>XRP-USD</option>
@@ -2174,6 +2557,33 @@ def home():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/chart")
+def chart_page():
+    if not authorized():
+        return Response("Unauthorized", status=401)
+    return Response(CHART_HTML, mimetype="text/html")
+
+
+@app.route("/api/ohlc")
+def api_ohlc():
+    if not authorized():
+        return jsonify({"error": "غير مصرح"}), 401
+    if rate_limited(client_ip(), limit=60, bucket="ohlc"):
+        return jsonify({"error": "عدد الطلبات كبير"}), 429
+    symbol = normalize_symbol(request.args.get("symbol", "BTC-USD"))
+    interval = request.args.get("interval", "1h").lower()
+    if not SYMBOL_RE.match(symbol) or interval not in VALID_INTERVALS:
+        return jsonify({"error": "رمز أو فريم غير صالح"}), 400
+    try:
+        data = chart_payload(symbol, interval)
+    except Exception:
+        logger.exception("chart payload failed")
+        return jsonify({"error": "تعذر بناء الرسم"}), 500
+    if data is None:
+        return jsonify({"error": f"تعذر جلب بيانات {symbol}"}), 502
+    return jsonify(clean(data))
 
 
 @app.route("/dashboard")
